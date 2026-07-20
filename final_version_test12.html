@@ -801,7 +801,7 @@
 </head>
 <body>
   <div class="app">
-    <div class="auth-screen" id="authScreen">
+    <div class="auth-screen" id="authScreen" style="display:none;">
       <div class="auth-card">
         <div class="brand" style="justify-content:center; margin-bottom: 18px;">
           <div class="logo">⛰</div>
@@ -811,8 +811,8 @@
         <p style="text-align:center; margin-top:-4px;" id="authSubtitle">Sign in to continue your learning path.</p>
 
         <div class="auth-tabs">
-          <button class="auth-tab active" id="tabSignIn" onclick="switchAuthMode('signin')">Sign in</button>
-          <button class="auth-tab" id="tabSignUp" onclick="switchAuthMode('signup')">Create account</button>
+          <button type="button" class="auth-tab active" id="tabSignIn" onclick="switchAuthMode('signin')">Sign in</button>
+          <button type="button" class="auth-tab" id="tabSignUp" onclick="switchAuthMode('signup')">Create account</button>
         </div>
 
         <form id="authForm" onsubmit="handleAuthSubmit(event)">
@@ -1099,6 +1099,8 @@
       ["resources", "Learning Resources"]
     ];
 
+    const AI_CHAT_ENDPOINT = "http://127.0.0.1:3000/api/chat";
+
     const state = {
       activePage: "workspace",
       selectedAnswer: null,
@@ -1360,6 +1362,7 @@
        登录 / 注册 / 登出
     ============================================================ */
     let authMode = "signin";
+    let authStateSubscription = null;
 
     function switchAuthMode(mode) {
       authMode = mode;
@@ -1375,17 +1378,21 @@
       errorEl.textContent = "";
     }
 
+    function showAuthMessage(message, color = "var(--danger)") {
+      const errorEl = document.getElementById("authError");
+      errorEl.style.color = color;
+      errorEl.textContent = message;
+    }
+
     async function handleAuthSubmit(event) {
       event.preventDefault();
       const email = document.getElementById("authEmail").value.trim();
       const password = document.getElementById("authPassword").value;
-      const errorEl = document.getElementById("authError");
       const submitBtn = document.getElementById("authSubmitBtn");
-      errorEl.style.color = "var(--danger)";
-      errorEl.textContent = "";
+      showAuthMessage("");
 
       if (!supabaseClient) {
-        errorEl.textContent = "数据库还没配置 — 先在文件顶部填好SUPABASE_URL和SUPABASE_KEY。";
+        showAuthMessage("数据库还没配置 — 先在文件顶部填好SUPABASE_URL和SUPABASE_KEY。", "var(--danger)");
         return;
       }
 
@@ -1402,15 +1409,14 @@
           if (error) throw error;
           if (data.user && !data.session) {
             // Supabase默认开启邮箱验证时，注册后不会立刻拿到session
-            errorEl.style.color = "var(--brand)";
-            errorEl.textContent = "Account created. Check your email to confirm, then sign in.";
+            showAuthMessage("Account created. Check your email to confirm, then sign in.", "var(--brand)");
             switchAuthMode("signin");
           } else if (data.user) {
             await onAuthSuccess(data.user);
           }
         }
       } catch (err) {
-        errorEl.textContent = err.message || "Something went wrong, please try again.";
+        showAuthMessage(err?.message || "Something went wrong, please try again.");
       } finally {
         submitBtn.disabled = false;
         submitBtn.textContent = authMode === "signin" ? "Sign in" : "Create account";
@@ -1499,13 +1505,31 @@
       await init();
     }
 
-    async function handleSignOut() {
-      if (supabaseClient) await supabaseClient.auth.signOut();
+    function clearAuthState() {
       CURRENT_USER_ID = null;
+      CURRENT_PLAN_ID = null;
       document.getElementById("appShell").style.display = "none";
       document.getElementById("authScreen").style.display = "flex";
       document.getElementById("authEmail").value = "";
       document.getElementById("authPassword").value = "";
+    }
+
+    async function handleSignOut() {
+      if (supabaseClient) await supabaseClient.auth.signOut();
+      clearAuthState();
+    }
+
+    function setupAuthStateListener() {
+      if (!supabaseClient || authStateSubscription) return;
+      const { data: { subscription } } = supabaseClient.auth.onAuthStateChange((event, session) => {
+        if (event === "SIGNED_IN" && session?.user) {
+          onAuthSuccess(session.user).catch(err => console.error("onAuthSuccess failed:", err));
+        }
+        if (event === "SIGNED_OUT") {
+          clearAuthState();
+        }
+      });
+      authStateSubscription = subscription;
     }
 
     async function bootstrapApp() {
@@ -1517,8 +1541,9 @@
         return;
       }
 
+      setupAuthStateListener();
       const { data } = await supabaseClient.auth.getSession();
-      if (data.session) {
+      if (data?.session?.user) {
         await onAuthSuccess(data.session.user);
       } else {
         document.getElementById("authScreen").style.display = "flex";
@@ -1568,34 +1593,54 @@
       `).join("");
     }
 
-    function handleCoachInteraction(text) {
-      const aiReply = `I am monitoring your evaluation logs concerning "${text}". Adjust option values on the challenge grid when ready.`;
-      state.chatHistory.push({ sender: "user", text: text });
-      state.chatHistory.push({ sender: "ai", text: aiReply });
+    async function requestCoachReply(text) {
+      const goalText = document.getElementById("coachGoalText")?.textContent || "Become a Machine Learning Engineer";
+
+      try {
+        const response = await fetch(AI_CHAT_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userMessage: text, learningGoal: goalText })
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+        return data.reply || "我已经收到你的问题，正在为你整理更贴合目标的建议。";
+      } catch (error) {
+        console.error("AI Coach request failed:", error);
+        return "我暂时无法连接到 AI 服务，请稍后再试。";
+      }
+    }
+
+    async function handleCoachInteraction(text) {
+      state.chatHistory.push({ sender: "user", text });
       renderWorkspaceCoach();
       saveChatMessage("user", text);
+
+      const aiReply = await requestCoachReply(text);
+      state.chatHistory.push({ sender: "ai", text: aiReply });
+      renderWorkspaceCoach();
       saveChatMessage("assistant", aiReply);
     }
 
     /* CAPTURING USER TEXTAREA INPUT */
-    function handleCustomUserInput() {
+    async function handleCustomUserInput() {
       const inputEl = document.getElementById("coachUserInput");
       const text = inputEl.value.trim();
       if (!text) return;
 
-      state.chatHistory.push({ sender: "user", text: text });
-      inputEl.value = ""; // Clear text field
+      state.chatHistory.push({ sender: "user", text });
+      inputEl.value = "";
+      renderWorkspaceCoach();
       saveChatMessage("user", text);
 
-      // Simulate adaptive agent responses
-      setTimeout(() => {
-        const aiReply = `Understood. Analyzing your preference for "${text}". I am automatically calibrating your personalized nodes and difficulty matrix.`;
-        state.chatHistory.push({ sender: "ai", text: aiReply });
-        renderWorkspaceCoach();
-        saveChatMessage("assistant", aiReply);
-      }, 700);
-
+      const aiReply = await requestCoachReply(text);
+      state.chatHistory.push({ sender: "ai", text: aiReply });
       renderWorkspaceCoach();
+      saveChatMessage("assistant", aiReply);
     }
 
     function handleTextAreaKey(event) {

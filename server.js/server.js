@@ -1,41 +1,58 @@
-// server.js — 薄代理后端
+// server.js — 安全代理后端
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const { OpenAI } = require('openai');
 
 const app = express();
-app.use(cors()); // 允许前端 HTML 跨域请求
+app.use(cors());
 app.use(express.json());
 
-// 初始化 OpenAI / 测试 API 客户端
-// 会自动读取环境变量 OPENAI_API_KEY，或在此填入你的测试 API Key
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY || "YOUR_TEST_API_KEY_HERE"
+  apiKey: process.env.OPENAI_API_KEY,
+  baseURL: process.env.OPENAI_BASE_URL || "https://api.siliconflow.cn/v1"
+});
+
+app.get('/', (_req, res) => {
+  res.json({
+    status: 'ok',
+    message: 'Sherpa AI backend is running.',
+    endpoints: ['/health', '/api/chat', '/api/ai-feedback']
+  });
 });
 
 // 接口 1：AI Coach 智能对话响应
 app.post('/api/chat', async (req, res) => {
   const { userMessage, learningGoal } = req.body;
 
+  if (!process.env.OPENAI_API_KEY) {
+    return res.status(500).json({ reply: "服务端尚未配置 OPENAI_API_KEY，请先设置环境变量后再试。" });
+  }
+
   try {
     const completion = await openai.chat.completions.create({
-      model: "gpt-5.6", // 替换为你使用的测试模型名称
+      model: process.env.OPENAI_MODEL || "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
       messages: [
-        { 
-          role: "system", 
-          content: `You are Sherpa, an empathetic AI Learning Strategist. The user's goal is: "${learningGoal || 'Master Machine Learning'}". Give a helpful, concise response (2-3 sentences max) to guide their learning.` 
+        {
+          role: "system",
+          content: `你是 Sherpa，一个贴心、实用的 AI 学习教练。当前用户的学习目标是：${learningGoal || 'Become a Machine Learning Engineer'}。请用中文回答，语气鼓励、简洁、重点清晰，控制在 2-4 句话。`
         },
         { role: "user", content: userMessage }
       ],
       temperature: 0.7,
-      max_tokens: 150
+      max_tokens: 220
     });
 
     res.json({ reply: completion.choices[0].message.content });
   } catch (error) {
     console.error("Chat API error:", error.message);
-    res.status(500).json({ reply: "I'm recalibrating your strategy based on your input. Let's continue with the practice question!" });
+    res.status(500).json({ reply: "我暂时无法连接到 AI 服务，请稍后再试。" });
   }
+});
+
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok' });
 });
 
 // 接口 2：错题诊断点评
@@ -52,7 +69,7 @@ Base Explanation: "${explanation}"
 Provide a 2-sentence empathetic diagnosis explaining why their specific choice was wrong and how to fix their thinking.`;
 
     const completion = await openai.chat.completions.create({
-      model: "gpt-5.6",
+      model: process.env.OPENAI_MODEL || "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
       messages: [
         { role: "system", content: "You are an empathetic learning coach providing quick diagnostic insights." },
         { role: "user", content: prompt }
