@@ -36,7 +36,7 @@ app.post('/api/chat', async (req, res) => {
       messages: [
         {
           role: "system",
-          content: `你是 Sherpa，一个贴心、实用的 AI 学习教练。当前用户的学习目标是：${learningGoal || 'Become a Machine Learning Engineer'}。请用中文回答，语气鼓励、简洁、重点清晰，控制在 2-4 句话。`
+          content: `You are Sherpa, a helpful and practical AI learning coach. The current user's learning goal is: ${learningGoal || 'Become a Machine Learning Engineer'}. ALWAYS RESPOND IN THE SAME LANGUAGE AS THE USER'S MESSAGE. Be encouraging, concise, and clear. Keep it to 2-4 sentences.`
         },
         { role: "user", content: userMessage }
       ],
@@ -71,7 +71,7 @@ Provide a 2-sentence empathetic diagnosis explaining why their specific choice w
     const completion = await openai.chat.completions.create({
       model: process.env.OPENAI_MODEL || "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
       messages: [
-        { role: "system", content: "You are an empathetic learning coach providing quick diagnostic insights." },
+        { role: "system", content: "You are an empathetic learning coach providing quick diagnostic insights. ALWAYS RESPOND IN THE SAME LANGUAGE AS THE QUESTION AND PROMPT." },
         { role: "user", content: prompt }
       ],
       temperature: 0.7,
