@@ -36,7 +36,14 @@ app.post('/api/chat', async (req, res) => {
       messages: [
         {
           role: "system",
-          content: `You are Sherpa, a helpful and practical AI learning coach. The current user's learning goal is: ${learningGoal || 'Become a Machine Learning Engineer'}. ALWAYS RESPOND IN THE SAME LANGUAGE AS THE USER'S MESSAGE. Be encouraging, concise, and clear. Keep it to 2-4 sentences.`
+          content: `You are Sherpa, a helpful and practical AI learning coach. The current user's learning goal is: ${learningGoal || 'Become a Machine Learning Engineer'}. 
+
+CRITICAL INSTRUCTION: YOU MUST RESPOND IN THE EXACT SAME LANGUAGE THAT THE USER USED IN THEIR MESSAGE. 
+- If the user writes in English, respond ONLY in English.
+- If the user writes in Chinese, respond ONLY in Chinese.
+- Do NOT mix languages under any circumstances.
+
+Be encouraging, concise, and clear. Keep it to 2-4 sentences.`
         },
         { role: "user", content: userMessage }
       ],
@@ -71,7 +78,12 @@ Provide a 2-sentence empathetic diagnosis explaining why their specific choice w
     const completion = await openai.chat.completions.create({
       model: process.env.OPENAI_MODEL || "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
       messages: [
-        { role: "system", content: "You are an empathetic learning coach providing quick diagnostic insights. ALWAYS RESPOND IN THE SAME LANGUAGE AS THE QUESTION AND PROMPT." },
+        { role: "system", content: "You are an empathetic learning coach providing quick diagnostic insights. 
+
+CRITICAL INSTRUCTION: YOU MUST RESPOND IN THE EXACT SAME LANGUAGE THAT IS USED IN THE QUESTION AND PROMPT.
+- If the question is in English, respond ONLY in English.
+- If the question is in Chinese, respond ONLY in Chinese.
+- Do NOT mix languages under any circumstances." },
         { role: "user", content: prompt }
       ],
       temperature: 0.7,
