@@ -1,0 +1,1213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sherpa AI — Personalized Learning Journey</title>
+  <style>
+    :root {
+      --bg: #f6f8fc;
+      --panel: rgba(255, 255, 255, 0.88);
+      --panel-solid: #ffffff;
+      --ink: #111827;
+      --muted: #64748b;
+      --line: #e2e8f0;
+      --brand: #5b5cf6;
+      --brand-2: #10b981;
+      --brand-3: #0ea5e9;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+      --shadow: 0 24px 70px rgba(15, 23, 42, 0.12);
+      --radius: 24px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(91, 92, 246, 0.22), transparent 34rem),
+        radial-gradient(circle at top right, rgba(16, 185, 129, 0.18), transparent 30rem),
+        linear-gradient(180deg, #fbfdff, var(--bg));
+    }
+
+    button, input { font: inherit; }
+
+    .app {
+      width: min(1440px, calc(100% - 48px));
+      margin: 0 auto;
+      padding: 24px 0 44px;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 14px;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 14px 18px;
+      margin-bottom: 26px;
+      border: 1px solid rgba(226, 232, 240, 0.78);
+      border-radius: 22px;
+      background: rgba(255, 255, 255, 0.78);
+      backdrop-filter: blur(18px);
+      box-shadow: 0 12px 40px rgba(15, 23, 42, 0.07);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 850;
+      letter-spacing: -0.04em;
+      font-size: 1.15rem;
+    }
+
+    .logo {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      color: white;
+      border-radius: 14px;
+      background: linear-gradient(135deg, var(--brand), #7c3aed 55%, var(--brand-3));
+      box-shadow: 0 14px 32px rgba(91, 92, 246, 0.32);
+    }
+
+    nav {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .nav-btn {
+      border: 0;
+      color: var(--muted);
+      background: transparent;
+      padding: 10px 12px;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: 0.18s ease;
+      font-weight: 700;
+      font-size: 0.9rem;
+    }
+
+    .nav-btn:hover, .nav-btn.active {
+      color: var(--ink);
+      background: #eef2ff;
+    }
+
+    .primary, .secondary, .ghost {
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 18px;
+      font-weight: 800;
+      cursor: pointer;
+      transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+    }
+
+    .primary {
+      color: white;
+      background: linear-gradient(135deg, var(--brand), #7c3aed);
+      box-shadow: 0 16px 34px rgba(91, 92, 246, 0.28);
+    }
+
+    .secondary {
+      color: #3730a3;
+      background: #eef2ff;
+    }
+
+    .ghost {
+      color: var(--ink);
+      background: #f8fafc;
+      border: 1px solid var(--line);
+    }
+
+    .primary:hover, .secondary:hover, .ghost:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 16px 35px rgba(15, 23, 42, 0.12);
+    }
+
+    .page { display: none; animation: rise 0.32s ease both; }
+    .page.active { display: block; }
+
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.04fr 0.96fr;
+      gap: 28px;
+      align-items: center;
+      min-height: 650px;
+    }
+
+    .hero-copy {
+      padding: 50px;
+      border-radius: 34px;
+      background: linear-gradient(145deg, rgba(255, 255, 255, 0.9), rgba(238, 242, 255, 0.78));
+      border: 1px solid rgba(226, 232, 240, 0.8);
+      box-shadow: var(--shadow);
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: #ecfeff;
+      color: #0369a1;
+      font-weight: 800;
+      font-size: 0.84rem;
+      margin-bottom: 18px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(3rem, 5vw, 5.8rem);
+      line-height: 0.96;
+      letter-spacing: -0.08em;
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: clamp(2rem, 3vw, 3.2rem);
+      line-height: 1.02;
+      letter-spacing: -0.06em;
+    }
+
+    h3 { margin: 0 0 10px; letter-spacing: -0.035em; }
+    p { color: var(--muted); line-height: 1.65; }
+
+    .hero-copy > p {
+      max-width: 680px;
+      font-size: 1.16rem;
+      margin: 22px 0 28px;
+    }
+
+    .hero-actions { display: flex; gap: 12px; flex-wrap: wrap; }
+
+    .demo-shell {
+      border-radius: 34px;
+      padding: 18px;
+      background: #0f172a;
+      box-shadow: 0 30px 90px rgba(15, 23, 42, 0.3);
+    }
+
+    .demo-window {
+      overflow: hidden;
+      border-radius: 24px;
+      background: #f8fafc;
+    }
+
+    .demo-header {
+      display: flex;
+      gap: 8px;
+      padding: 14px;
+      border-bottom: 1px solid #e2e8f0;
+      background: white;
+    }
+
+    .dot { width: 10px; height: 10px; border-radius: 999px; background: #cbd5e1; }
+    .dot:nth-child(1) { background: #fb7185; }
+    .dot:nth-child(2) { background: #fbbf24; }
+    .dot:nth-child(3) { background: #34d399; }
+
+    .demo-body { padding: 22px; }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      margin-top: 22px;
+    }
+
+    .feature-card, .card, .panel {
+      background: var(--panel);
+      border: 1px solid rgba(226, 232, 240, 0.86);
+      border-radius: var(--radius);
+      box-shadow: 0 18px 48px rgba(15, 23, 42, 0.08);
+    }
+
+    .feature-card { padding: 22px; }
+    .feature-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 15px;
+      display: grid;
+      place-items: center;
+      margin-bottom: 14px;
+      background: #eef2ff;
+      color: var(--brand);
+      font-size: 1.3rem;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 280px 1fr;
+      gap: 22px;
+    }
+
+    .sidebar, .main {
+      border-radius: 30px;
+      background: rgba(255, 255, 255, 0.74);
+      border: 1px solid rgba(226, 232, 240, 0.86);
+      box-shadow: var(--shadow);
+    }
+
+    .sidebar { padding: 18px; align-self: start; }
+    .main { padding: 28px; min-height: 660px; }
+
+    .step-list { display: grid; gap: 12px; }
+    .step {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      padding: 12px;
+      border-radius: 16px;
+      color: var(--muted);
+      font-weight: 750;
+    }
+
+    .step.active { color: var(--ink); background: #eef2ff; }
+    .step.done { color: #047857; background: #ecfdf5; }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      min-height: 28px;
+      padding: 5px 10px;
+      border-radius: 999px;
+      background: #f1f5f9;
+      color: #475569;
+      font-size: 0.82rem;
+      font-weight: 850;
+    }
+
+    .badge.green { background: #dcfce7; color: #166534; }
+    .badge.blue { background: #e0f2fe; color: #075985; }
+    .badge.purple { background: #ede9fe; color: #5b21b6; }
+    .badge.amber { background: #fef3c7; color: #92400e; }
+    .badge.red { background: #fee2e2; color: #991b1b; }
+
+    .chat-card {
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 22px;
+      margin-top: 22px;
+    }
+
+    .chat-window, .profile-card {
+      padding: 22px;
+      min-height: 510px;
+    }
+
+    .messages {
+      height: 328px;
+      overflow: auto;
+      padding-right: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .msg {
+      max-width: 82%;
+      padding: 13px 15px;
+      border-radius: 18px;
+      line-height: 1.45;
+      font-weight: 650;
+    }
+
+    .ai {
+      align-self: flex-start;
+      background: #eef2ff;
+      color: #312e81;
+      border-bottom-left-radius: 6px;
+    }
+
+    .user {
+      align-self: flex-end;
+      background: #0f172a;
+      color: white;
+      border-bottom-right-radius: 6px;
+    }
+
+    .answer-area {
+      display: flex;
+      gap: 10px;
+      margin-top: 18px;
+      align-items: center;
+    }
+
+    .answer-area input {
+      flex: 1;
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      outline: none;
+      background: white;
+    }
+
+    .choice-grid {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+    }
+
+    .choice {
+      border: 1px solid var(--line);
+      background: white;
+      color: var(--ink);
+      border-radius: 999px;
+      padding: 10px 13px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    .profile-stat {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 14px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .profile-stat strong { text-align: right; }
+
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: 1.25fr 0.75fr;
+      gap: 22px;
+      margin-top: 22px;
+    }
+
+    .path {
+      padding: 24px;
+      position: relative;
+    }
+
+    .node {
+      display: grid;
+      grid-template-columns: 54px 1fr auto;
+      gap: 16px;
+      align-items: center;
+      padding: 16px;
+      border-radius: 20px;
+      background: white;
+      border: 1px solid var(--line);
+      margin-bottom: 16px;
+      position: relative;
+    }
+
+    .node:not(:last-child)::after {
+      content: "";
+      position: absolute;
+      left: 42px;
+      bottom: -17px;
+      height: 17px;
+      border-left: 2px dashed #cbd5e1;
+    }
+
+    .node-icon {
+      width: 54px;
+      height: 54px;
+      border-radius: 18px;
+      display: grid;
+      place-items: center;
+      background: #f1f5f9;
+      font-size: 1.25rem;
+    }
+
+    .completed .node-icon { background: #dcfce7; }
+    .learning .node-icon { background: #eef2ff; }
+    .locked { opacity: 0.66; }
+
+    .recommendation {
+      padding: 24px;
+      color: white;
+      background: linear-gradient(145deg, #312e81, #5b5cf6 58%, #0ea5e9);
+      border-radius: var(--radius);
+      box-shadow: 0 22px 55px rgba(91, 92, 246, 0.25);
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      margin-top: 16px;
+    }
+
+    .metric {
+      padding: 18px;
+      border-radius: 20px;
+      background: white;
+      border: 1px solid var(--line);
+    }
+
+    .metric b {
+      display: block;
+      font-size: 2rem;
+      letter-spacing: -0.05em;
+      margin-bottom: 4px;
+    }
+
+    .progress {
+      height: 11px;
+      border-radius: 999px;
+      background: #e2e8f0;
+      overflow: hidden;
+    }
+
+    .progress > span {
+      display: block;
+      height: 100%;
+      width: var(--value);
+      background: linear-gradient(90deg, var(--brand), var(--brand-2));
+      border-radius: inherit;
+      transition: width 0.35s ease;
+    }
+
+    .lesson-grid {
+      display: grid;
+      grid-template-columns: 1fr 330px;
+      gap: 22px;
+      margin-top: 22px;
+    }
+
+    .lesson-section {
+      padding: 20px;
+      border-radius: 20px;
+      background: white;
+      border: 1px solid var(--line);
+      margin-bottom: 14px;
+    }
+
+    .coach {
+      padding: 22px;
+      border-radius: var(--radius);
+      color: white;
+      background: #0f172a;
+      align-self: start;
+      position: sticky;
+      top: 110px;
+    }
+
+    .quiz-box {
+      max-width: 820px;
+      margin: 28px auto 0;
+      padding: 30px;
+    }
+
+    .option {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      background: white;
+      border-radius: 18px;
+      margin: 12px 0;
+      cursor: pointer;
+      font-weight: 800;
+      text-align: left;
+    }
+
+    .option.selected {
+      border-color: var(--brand);
+      background: #eef2ff;
+      box-shadow: 0 12px 28px rgba(91, 92, 246, 0.14);
+    }
+
+    .feedback-hero {
+      display: grid;
+      grid-template-columns: 0.9fr 1.1fr;
+      gap: 22px;
+      align-items: stretch;
+      margin-top: 22px;
+    }
+
+    .result-card {
+      padding: 34px;
+      color: white;
+      background: linear-gradient(145deg, #047857, #10b981);
+      border-radius: 30px;
+    }
+
+    .result-card.incorrect { background: linear-gradient(145deg, #b45309, #f59e0b); }
+
+    .insight-list { display: grid; gap: 14px; }
+    .insight {
+      padding: 18px;
+      border-radius: 20px;
+      background: white;
+      border: 1px solid var(--line);
+    }
+
+    .mistake-grid, .resource-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 18px;
+      margin-top: 22px;
+    }
+
+    .mistake, .resource {
+      padding: 22px;
+      background: white;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+    }
+
+    .category-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .timeline {
+      display: grid;
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .timeline-item {
+      display: grid;
+      grid-template-columns: 42px 1fr;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .pulse {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      border-radius: 15px;
+      background: #eef2ff;
+      color: var(--brand);
+      font-weight: 900;
+    }
+
+    @media (max-width: 1100px) {
+      .hero, .layout, .dashboard-grid, .chat-card, .lesson-grid, .feedback-hero { grid-template-columns: 1fr; }
+      .feature-grid, .metric-grid, .mistake-grid, .resource-grid { grid-template-columns: repeat(2, 1fr); }
+      nav { display: none; }
+    }
+
+    @media (max-width: 720px) {
+      .app { width: min(100% - 24px, 1440px); }
+      .hero-copy, .main { padding: 22px; }
+      .feature-grid, .metric-grid, .mistake-grid, .resource-grid { grid-template-columns: 1fr; }
+      .topbar { position: static; }
+    }
+  </style>
+</head>
+<body>
+  <!--
+  User {
+    id,
+    name,
+    email,
+    createdAt,
+    preferredSubject
+  }
+  -->
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo">⛰</div>
+        <span>Sherpa AI</span>
+      </div>
+      <nav id="nav"></nav>
+      <button class="primary" onclick="goTo('interview')">Start Learning</button>
+    </header>
+
+    <main>
+      <section class="page active" id="landing">
+        <div class="hero">
+          <div class="hero-copy">
+            <div class="eyebrow">AI learning strategist • Adaptive roadmap • Mistake intelligence</div>
+            <h1>Your AI builds your personal learning journey.</h1>
+            <p>Sherpa AI interviews you, maps your knowledge gaps, creates a learning route, recommends today’s mission, and adapts after every mistake.</p>
+            <div class="hero-actions">
+              <button class="primary" onclick="goTo('interview')">Start Learning</button>
+              <button class="ghost" onclick="goTo('dashboard')">View Demo Dashboard</button>
+            </div>
+            <div class="feature-grid">
+              <div class="feature-card">
+                <div class="feature-icon">🧭</div>
+                <h3>AI Learning Coach</h3>
+                <p>Turns vague goals into an actionable strategy.</p>
+              </div>
+              <div class="feature-card">
+                <div class="feature-icon">⚡</div>
+                <h3>Adaptive Practice</h3>
+                <p>Exercises shift based on skill level and errors.</p>
+              </div>
+              <div class="feature-card">
+                <div class="feature-icon">🗺</div>
+                <h3>Dynamic Learning Map</h3>
+                <p>Every topic has status, dependencies, and next steps.</p>
+              </div>
+              <div class="feature-card">
+                <div class="feature-icon">🔎</div>
+                <h3>Mistake Intelligence</h3>
+                <p>Mistakes become targeted review loops.</p>
+              </div>
+            </div>
+          </div>
+          <div class="demo-shell">
+            <div class="demo-window">
+              <div class="demo-header"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+              <div class="demo-body">
+                <div class="recommendation">
+                  <span class="badge blue">Today’s mission</span>
+                  <h2 style="margin-top:18px">Linear Regression</h2>
+                  <p style="color:#dbeafe">Recommended because your roadmap shows Python and statistics foundations are ready, but model generalization needs reinforcement.</p>
+                </div>
+                <div class="timeline">
+                  <div class="timeline-item"><div class="pulse">1</div><div><b>Interview learner</b><p>Goal, level, style, and available time.</p></div></div>
+                  <div class="timeline-item"><div class="pulse">2</div><div><b>Build knowledge graph</b><p>Personalized sequence with adaptive statuses.</p></div></div>
+                  <div class="timeline-item"><div class="pulse">3</div><div><b>Analyze mistakes</b><p>Automatically updates the next lesson.</p></div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="interview">
+        <div class="layout">
+          <aside class="sidebar">
+            <h3>Onboarding</h3>
+            <p>The coach builds a learning profile through a short diagnostic conversation.</p>
+            <div class="step-list" id="interviewSteps"></div>
+          </aside>
+          <div class="main">
+            <span class="badge purple">AI Learning Interview</span>
+            <h2>Let’s design your path.</h2>
+            <p>This is a strategic intake, not an open-ended chatbot. Sherpa extracts goal, level, style, and time constraints.</p>
+            <div class="chat-card">
+              <div class="card chat-window">
+                <div class="messages" id="messages"></div>
+                <div id="choiceArea" class="choice-grid"></div>
+                <div class="answer-area">
+                  <input id="answerInput" placeholder="Type your answer..." onkeydown="if(event.key==='Enter') submitInterviewAnswer()" />
+                  <button class="primary" onclick="submitInterviewAnswer()">Send</button>
+                </div>
+              </div>
+              <!--
+              LearningProfile {
+                userGoal,
+                motivation,
+                currentLevel,
+                learningStyle,
+                availableTime,
+                generatedAt
+              }
+              -->
+              <div class="card profile-card">
+                <span class="badge green">Generated profile</span>
+                <h3 style="margin-top:16px">Learning Profile</h3>
+                <div id="profilePreview"></div>
+                <button class="primary" id="profileCta" style="margin-top:22px; display:none" onclick="goTo('dashboard')">Generate Learning Map</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="dashboard">
+        <div class="main">
+          <span class="badge purple">Learning Dashboard</span>
+          <h2>Your personalized learning command center.</h2>
+          <p>Sherpa turns your profile into a live roadmap that updates as you learn.</p>
+          <div class="dashboard-grid">
+            <!--
+            LearningPath {
+              id,
+              userId,
+              subject,
+              nodes,
+              currentNodeId,
+              completionPercent,
+              updatedAt
+            }
+            -->
+            <div class="card path">
+              <div class="category-title">
+                <h3>Personalized Learning Map</h3>
+                <span class="badge blue">Machine Learning track</span>
+              </div>
+              <div id="learningMap"></div>
+            </div>
+            <div>
+              <div class="recommendation">
+                <span class="badge blue">AI recommendation</span>
+                <h3 style="margin-top:18px">Review probability before neural networks.</h3>
+                <p style="color:#e0f2fe">Based on your recent answers, your model accuracy intuition is improving, but probability and generalization are still weak links.</p>
+                <button class="secondary" onclick="goTo('lesson')">Start today’s mission</button>
+              </div>
+              <div class="card" style="padding:22px; margin-top:18px">
+                <h3>Learning Progress</h3>
+                <div class="progress" style="--value:46%"><span></span></div>
+                <div class="metric-grid">
+                  <div class="metric"><b id="completionMetric">46%</b><span>Complete</span></div>
+                  <div class="metric"><b>7</b><span>Day streak</span></div>
+                  <div class="metric"><b>3</b><span>Weak areas</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="lesson">
+        <div class="main">
+          <!--
+          Lesson {
+            id,
+            knowledgeNodeId,
+            title,
+            objective,
+            keyConcepts,
+            explanation,
+            example,
+            miniChallenge,
+            recommendedReason
+          }
+          -->
+          <span class="badge amber">Today’s learning mission</span>
+          <h2>Linear Regression</h2>
+          <p>Learning objective: Understand how machines predict continuous values.</p>
+          <div class="lesson-grid">
+            <div>
+              <div class="lesson-section">
+                <h3>Key concepts</h3>
+                <p>Features, target values, prediction line, loss, training data, testing data, and generalization.</p>
+              </div>
+              <div class="lesson-section">
+                <h3>Explanation</h3>
+                <p>Linear regression finds the line that best connects input features to a numeric outcome. The model learns by reducing prediction error across examples.</p>
+              </div>
+              <div class="lesson-section">
+                <h3>Example</h3>
+                <p>If a model predicts house price from size, it learns a relationship like: larger size usually means higher price, while still accounting for error.</p>
+              </div>
+              <div class="lesson-section">
+                <h3>Mini challenge</h3>
+                <p>A study-hours model performs perfectly on five memorized examples but fails on new students. What model behavior might explain this?</p>
+                <button class="primary" onclick="goTo('quiz')">Try AI-generated quiz</button>
+              </div>
+            </div>
+            <aside class="coach">
+              <span class="badge blue">AI Coach</span>
+              <h3 style="margin-top:18px">Why this lesson is recommended for you</h3>
+              <p style="color:#cbd5e1">Your profile says you prefer project-based learning. Linear regression gives you a concrete first model while exposing your current weak area: generalization.</p>
+              <div class="progress" style="--value:68%"><span></span></div>
+              <p style="color:#cbd5e1">Readiness for next node: 68%</p>
+            </aside>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="quiz">
+        <div class="main">
+          <!--
+          Question {
+            id,
+            lessonId,
+            prompt,
+            options,
+            correctAnswer,
+            difficulty,
+            knowledgePoint
+          }
+          -->
+          <span class="badge red">AI Generated Quiz</span>
+          <h2>Personalized practice</h2>
+          <p>This question targets your weak area: model generalization.</p>
+          <div class="card quiz-box">
+            <div class="category-title">
+              <span class="badge amber">Difficulty: Medium</span>
+              <span class="badge purple">Knowledge point: Generalization</span>
+            </div>
+            <h3>A model performs well on training data but poorly on testing data. What happened?</h3>
+            <button class="option" onclick="selectOption(this, 'A')"><span class="badge">A</span> Underfitting</button>
+            <button class="option" onclick="selectOption(this, 'B')"><span class="badge">B</span> Overfitting</button>
+            <button class="option" onclick="selectOption(this, 'C')"><span class="badge">C</span> Data cleaning</button>
+            <button class="primary" style="margin-top:18px" onclick="submitQuiz()">Submit answer</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="feedback">
+        <div class="main">
+          <!--
+          AnswerHistory {
+            id,
+            userId,
+            questionId,
+            selectedAnswer,
+            isCorrect,
+            answeredAt,
+            confidenceScore
+          }
+          -->
+          <span class="badge green">AI Feedback</span>
+          <h2>Here’s what Sherpa learned from your answer.</h2>
+          <div class="feedback-hero">
+            <div class="result-card" id="resultCard">
+              <span class="badge green" id="resultBadge">Correct</span>
+              <h2 id="resultTitle" style="margin-top:18px">Nice — that’s overfitting.</h2>
+              <p id="resultText" style="color:#ecfdf5">You recognized that strong training performance can hide poor real-world generalization.</p>
+            </div>
+            <div class="card" style="padding:24px">
+              <div class="insight-list">
+                <div class="insight">
+                  <h3>What you understood</h3>
+                  <p id="understoodText">You understand model accuracy and the difference between training and testing performance.</p>
+                </div>
+                <div class="insight">
+                  <h3>Knowledge gap</h3>
+                  <p id="gapText">You should deepen your understanding of generalization and why memorized patterns fail on new data.</p>
+                </div>
+                <div class="insight">
+                  <h3>Recommended next action</h3>
+                  <p id="nextText">Practice overfitting examples, then retry a slightly harder scenario question.</p>
+                  <button class="primary" onclick="adaptPath()">Update my learning path</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="mistakes">
+        <div class="main">
+          <!--
+          MistakeRecord {
+            id,
+            userId,
+            questionId,
+            originalQuestion,
+            selectedAnswer,
+            correctAnswer,
+            errorReason,
+            relatedKnowledgePoint,
+            retryStatus,
+            createdAt
+          }
+          -->
+          <span class="badge red">Mistake Intelligence</span>
+          <h2>Your AI-powered mistake notebook.</h2>
+          <p>Sherpa organizes errors by concept, reason, and next retry opportunity.</p>
+          <div class="mistake-grid" id="mistakeGrid"></div>
+        </div>
+      </section>
+
+      <section class="page" id="resources">
+        <div class="main">
+          <!--
+          Resource {
+            id,
+            knowledgeNodeId,
+            type,
+            title,
+            url,
+            recommendedReason,
+            estimatedTime
+          }
+          -->
+          <span class="badge blue">Learning Resources</span>
+          <h2>Curated for your knowledge gaps.</h2>
+          <p>Each resource is tied to a knowledge point and a reason from your recent learning behavior.</p>
+          <div class="resource-grid" id="resourceGrid"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const pages = [
+      ["landing", "Home"],
+      ["interview", "Interview"],
+      ["dashboard", "Dashboard"],
+      ["lesson", "Lesson"],
+      ["quiz", "Quiz"],
+      ["feedback", "Feedback"],
+      ["mistakes", "Mistakes"],
+      ["resources", "Resources"]
+    ];
+
+    const interviewQuestions = [
+      { key: "topic", prompt: "What do you want to learn?", placeholder: "Example: Machine Learning" },
+      { key: "motivation", prompt: "Why do you want to learn it?", choices: ["Career", "School", "Personal interest"] },
+      { key: "level", prompt: "What is your current level?", choices: ["Beginner", "Intermediate", "Advanced"] },
+      { key: "style", prompt: "How do you prefer learning?", choices: ["Project-based", "Theory first", "Practice focused"] },
+      { key: "time", prompt: "How much time can you spend daily?", placeholder: "Example: 30 minutes" }
+    ];
+
+    const state = {
+      activePage: "landing",
+      interviewIndex: 0,
+      profile: {
+        topic: "Machine Learning",
+        motivation: "Career",
+        level: "Beginner",
+        style: "Project-based",
+        time: "30 minutes"
+      },
+      selectedAnswer: null,
+      pathAdapted: false
+    };
+
+    const learningNodes = [
+      { title: "Python Basics", status: "completed", icon: "✓", description: "Syntax, functions, notebooks" },
+      { title: "Statistics", status: "completed", icon: "✓", description: "Mean, variance, probability basics" },
+      { title: "Machine Learning Fundamentals", status: "learning", icon: "↗", description: "Models, training, testing, overfitting" },
+      { title: "Neural Networks", status: "locked", icon: "🔒", description: "Activation functions, layers, gradients" }
+    ];
+
+    const mistakes = [
+      {
+        category: "Machine Learning",
+        items: [
+          { topic: "Overfitting", question: "Training accuracy is high but testing accuracy is low. What happened?", reason: "Confused memorization with real generalization.", tag: "Generalization" },
+          { topic: "Feature engineering", question: "Which input feature improves a housing price model?", reason: "Missed how domain signals affect prediction quality.", tag: "Features" }
+        ]
+      },
+      {
+        category: "Statistics",
+        items: [
+          { topic: "Probability", question: "What does a 0.8 predicted probability mean?", reason: "Needs stronger confidence and uncertainty interpretation.", tag: "Probability" }
+        ]
+      }
+    ];
+
+    const resources = [
+      { type: "Article", title: "Visual Guide to Overfitting", point: "Generalization", reason: "Recommended because recent answers show uncertainty around training vs testing performance.", time: "9 min" },
+      { type: "Video", title: "Linear Regression from Scratch", point: "Machine Learning Fundamentals", reason: "Recommended because your profile prefers project-based explanations.", time: "14 min" },
+      { type: "Documentation", title: "Scikit-learn Model Evaluation", point: "Model validation", reason: "Recommended before your next project so you can measure model performance correctly.", time: "18 min" },
+      { type: "Article", title: "Introduction to Neural Networks", point: "Neural Networks", reason: "Recommended after probability review because activation functions depend on weighted signals.", time: "12 min" }
+    ];
+
+    function init() {
+      renderNav();
+      renderInterview();
+      renderProfile();
+      renderLearningMap();
+      renderMistakes();
+      renderResources();
+    }
+
+    function renderNav() {
+      const nav = document.getElementById("nav");
+      nav.innerHTML = pages.map(([id, label]) => `<button class="nav-btn ${id === state.activePage ? "active" : ""}" onclick="goTo('${id}')">${label}</button>`).join("");
+    }
+
+    function goTo(pageId) {
+      state.activePage = pageId;
+      document.querySelectorAll(".page").forEach(page => page.classList.remove("active"));
+      document.getElementById(pageId).classList.add("active");
+      renderNav();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    function renderInterview() {
+      const messages = document.getElementById("messages");
+      const steps = document.getElementById("interviewSteps");
+      const current = interviewQuestions[state.interviewIndex];
+
+      steps.innerHTML = interviewQuestions.map((question, index) => {
+        const status = index < state.interviewIndex ? "done" : index === state.interviewIndex ? "active" : "";
+        return `<div class="step ${status}"><span class="badge">${index + 1}</span>${question.prompt}</div>`;
+      }).join("");
+
+      messages.innerHTML = "";
+      interviewQuestions.slice(0, state.interviewIndex + 1).forEach((question, index) => {
+        messages.innerHTML += `<div class="msg ai">${question.prompt}</div>`;
+        if (index < state.interviewIndex || state.profile[question.key]) {
+          messages.innerHTML += `<div class="msg user">${state.profile[question.key]}</div>`;
+        }
+      });
+
+      const choiceArea = document.getElementById("choiceArea");
+      const input = document.getElementById("answerInput");
+      choiceArea.innerHTML = "";
+
+      if (current && current.choices) {
+        input.style.display = "none";
+        current.choices.forEach(choice => {
+          choiceArea.innerHTML += `<button class="choice" onclick="answerChoice('${choice}')">${choice}</button>`;
+        });
+      } else if (current) {
+        input.style.display = "block";
+        input.placeholder = current.placeholder || "Type your answer...";
+        input.value = "";
+      } else {
+        input.style.display = "none";
+      }
+
+      messages.scrollTop = messages.scrollHeight;
+    }
+
+    function answerChoice(choice) {
+      const current = interviewQuestions[state.interviewIndex];
+      state.profile[current.key] = choice;
+      advanceInterview();
+    }
+
+    function submitInterviewAnswer() {
+      const current = interviewQuestions[state.interviewIndex];
+      const input = document.getElementById("answerInput");
+      if (!current) return;
+      const value = input.value.trim();
+      if (!value) return;
+      state.profile[current.key] = value;
+      advanceInterview();
+    }
+
+    function advanceInterview() {
+      if (state.interviewIndex < interviewQuestions.length - 1) {
+        state.interviewIndex += 1;
+        renderInterview();
+      } else {
+        state.interviewIndex = interviewQuestions.length;
+        document.getElementById("choiceArea").innerHTML = "";
+        document.getElementById("answerInput").style.display = "none";
+        document.getElementById("messages").innerHTML += `<div class="msg ai">Profile generated. I’ve built your first adaptive roadmap.</div>`;
+        document.getElementById("profileCta").style.display = "inline-flex";
+      }
+      renderProfile();
+    }
+
+    function renderProfile() {
+      const profile = state.profile;
+      const styleLabel = profile.style === "Project-based" ? "Hands-on" : profile.style;
+      document.getElementById("profilePreview").innerHTML = `
+        <div class="profile-stat"><span>Goal</span><strong>Become a ${profile.topic || "Machine Learning"} Engineer</strong></div>
+        <div class="profile-stat"><span>Motivation</span><strong>${profile.motivation || "Career"}</strong></div>
+        <div class="profile-stat"><span>Current Level</span><strong>${profile.level || "Beginner"}</strong></div>
+        <div class="profile-stat"><span>Learning Style</span><strong>${styleLabel || "Hands-on"}</strong></div>
+        <div class="profile-stat"><span>Daily Commitment</span><strong>${profile.time || "30 minutes"}</strong></div>
+        <p style="margin-top:18px">Sherpa will prioritize practical lessons, short feedback loops, and targeted reviews before harder concepts unlock.</p>
+      `;
+    }
+
+    function renderLearningMap() {
+      const map = document.getElementById("learningMap");
+      map.innerHTML = learningNodes.map(node => `
+        <!--
+        KnowledgeNode {
+          id,
+          title,
+          prerequisites,
+          status,
+          masteryScore,
+          weakSignals
+        }
+        -->
+        <div class="node ${node.status}">
+          <div class="node-icon">${node.icon}</div>
+          <div>
+            <h3>${node.title}</h3>
+            <p style="margin:0">${node.description}</p>
+          </div>
+          <span class="badge ${node.status === "completed" ? "green" : node.status === "learning" ? "purple" : ""}">${node.status}</span>
+        </div>
+      `).join("");
+    }
+
+    function selectOption(element, answer) {
+      state.selectedAnswer = answer;
+      document.querySelectorAll(".option").forEach(option => option.classList.remove("selected"));
+      element.classList.add("selected");
+    }
+
+    function submitQuiz() {
+      if (!state.selectedAnswer) {
+        alert("Choose an answer first so Sherpa can analyze it.");
+        return;
+      }
+      const correct = state.selectedAnswer === "B";
+      const resultCard = document.getElementById("resultCard");
+      resultCard.classList.toggle("incorrect", !correct);
+      document.getElementById("resultBadge").textContent = correct ? "Correct" : "Needs review";
+      document.getElementById("resultTitle").textContent = correct ? "Nice — that’s overfitting." : "Close — this is overfitting.";
+      document.getElementById("resultText").textContent = correct
+        ? "You recognized that strong training performance can hide poor real-world generalization."
+        : "Your answer suggests the training/testing split still needs reinforcement.";
+      document.getElementById("understoodText").textContent = correct
+        ? "You understand model accuracy and the difference between training and testing performance."
+        : "You understand that model performance can fail, but the failure type needs sharper labeling.";
+      document.getElementById("gapText").textContent = "You need stronger understanding of generalization: models should perform well on new examples, not just memorized training data.";
+      document.getElementById("nextText").textContent = "Practice overfitting examples, then retry a slightly harder scenario question.";
+      goTo("feedback");
+    }
+
+    function adaptPath() {
+      state.pathAdapted = true;
+      learningNodes[2].description = "Models, training, testing, overfitting — review loop added";
+      learningNodes[3].status = "locked";
+      renderLearningMap();
+      document.getElementById("completionMetric").textContent = "49%";
+      alert("Learning path updated: Sherpa added an overfitting review before neural networks.");
+      goTo("dashboard");
+    }
+
+    function renderMistakes() {
+      document.getElementById("mistakeGrid").innerHTML = mistakes.map(group => `
+        <div class="card mistake">
+          <div class="category-title">
+            <h3>${group.category}</h3>
+            <span class="badge red">${group.items.length} gaps</span>
+          </div>
+          ${group.items.map(item => `
+            <div class="insight">
+              <span class="badge purple">${item.topic}</span>
+              <p><b>Original question:</b> ${item.question}</p>
+              <p><b>Error reason:</b> ${item.reason}</p>
+              <p><b>Related knowledge point:</b> ${item.tag}</p>
+              <button class="secondary" onclick="goTo('quiz')">Retry</button>
+            </div>
+          `).join("")}
+        </div>
+      `).join("");
+    }
+
+    function renderResources() {
+      document.getElementById("resourceGrid").innerHTML = resources.map(resource => `
+        <div class="resource">
+          <div class="category-title">
+            <span class="badge blue">${resource.type}</span>
+            <span class="badge">${resource.time}</span>
+          </div>
+          <h3>${resource.title}</h3>
+          <p><b>Knowledge point:</b> ${resource.point}</p>
+          <p><b>Why:</b> ${resource.reason}</p>
+          <button class="ghost">Save resource</button>
+        </div>
+      `).join("");
+    }
+
+    init();
+  </script>
+</body>
+</html>
