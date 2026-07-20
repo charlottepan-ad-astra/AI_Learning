@@ -855,10 +855,10 @@
             
             <div class="card" style="padding: 14px; background: rgba(0,0,0,0.04); border: 1px solid rgba(0,0,0,0.05); margin: 12px 0; border-radius: 14px;">
               <span class="badge blue" style="min-height:20px; font-size:0.75rem;">Learning Goal</span>
-              <p style="color: #1f2937; margin: 6px 0 0 0; font-size: 0.9rem;" id="coachGoalText">Become a Machine Learning Engineer</p>
+              <p style="color: #1f2937; margin: 6px 0 0 0; font-size: 0.9rem;" id="coachGoalText">Not set yet</p>
             </div>
 
-            <div class="messages" id="workspaceMessages" style="height: 240px; background: rgba(0,0,0,0.04); border-radius: 16px; padding: 12px; margin-bottom: 12px; border: 1px solid rgba(0,0,0,0.05);">
+            <div class="messages" id="workspaceMessages" style="height: 340px; background: rgba(0,0,0,0.04); border-radius: 16px; padding: 12px; margin-bottom: 12px; border: 1px solid rgba(0,0,0,0.05);">
               <!-- Dynamically injected conversation history -->
             </div>
 
@@ -875,19 +875,25 @@
             <div style="border-top: 1px solid rgba(0,0,0,0.08); padding-top: 12px; margin-top: 12px;">
               <span class="badge green">AI Recommendation</span>
               <p style="color:#374151; font-size: 0.85rem; margin: 6px 0 0 0;" id="coachRecText">
-                Readiness for next node: 68%. Review generalization gaps before moving forward.
+                Tell me what you want to learn today!
               </p>
             </div>
           </aside>
 
           <!-- RIGHT SIDE (70%): Quiz Challenge -->
           <div class="workspace-right-stack">
-            <div class="main" style="min-height: auto; padding: 30px; margin: 0;">
+            <div class="main" style="min-height: auto; padding: 30px; margin: 0;" id="quizContainer">
               <span class="badge red">AI Generated Quiz</span>
               <h2>Personalized practice</h2>
-              <p style="margin-bottom: 20px;">This question targets your weak area: model generalization.</p>
+              <div id="quizPlaceholder" style="text-align: center; padding: 60px 20px;">
+                <div style="font-size: 4rem; margin-bottom: 20px;">📚</div>
+                <h3 style="margin-bottom: 16px;">No quiz yet</h3>
+                <p style="color: var(--muted); max-width: 400px; margin: 0 auto;">
+                  First, tell the AI coach what you want to learn, and a personalized quiz will be generated for you!
+                </p>
+              </div>
               
-              <div class="card quiz-box" style="margin: 0; max-width: 100%; width: 100%; padding: 0; background: transparent; border: 0; box-shadow: none;">
+              <div class="card quiz-box" id="quizContent" style="margin: 0; max-width: 100%; width: 100%; padding: 0; background: transparent; border: 0; box-shadow: none; display: none;">
                 <div class="category-title">
                   <span class="badge amber" id="workspaceQuizDifficulty">Difficulty: Medium</span>
                   <span class="badge purple" id="workspaceQuizKP">Knowledge point: Generalization</span>
@@ -948,7 +954,6 @@
             <p>Sherpa AI interviews you, maps your knowledge gaps, creates a learning route, recommends today’s mission, and adapts after every mistake.</p>
             <div class="hero-actions">
               <button class="primary" onclick="goTo('workspace')">Start Learning</button>
-              <button class="ghost" onclick="goTo('dashboard')">View Demo Dashboard</button>
             </div>
             <div class="feature-grid">
               <div class="feature-card">
@@ -1093,6 +1098,7 @@
     }
 
     const pages = [
+      ["landing", "Home"],
       ["workspace", "Learning Workspace"],
       ["dashboard", "Learning Map"],
       ["mistakes", "Mistake Book"],
@@ -1102,50 +1108,32 @@
     const AI_CHAT_ENDPOINT = "http://127.0.0.1:3000/api/chat";
 
     const state = {
-      activePage: "workspace",
+      activePage: "landing",
       selectedAnswer: null,
       pathAdapted: false,
       chatIndex: 0,
       chatHistory: [
-        { sender: "ai", text: "Welcome back! I have evaluated your profile requirements and configured a customized machine learning pipeline strategy." },
-        { sender: "ai", text: "I created a personalized challenge based on your learning progress. Check the question panel." }
+        { sender: "ai", text: "Hi! I’ll help you pick a learning goal and tailor your next practice question. Tell me what you want to learn today." }
       ],
-      suggestedReplies: ["Analyze model overfitting traits", "Explain generalization weights"]
+      suggestedReplies: [
+        "Help me get started with a new skill",
+        "I'm looking for practice questions"
+      ],
+      learningGoal: "Not set yet",
+      coachStatus: "Waiting for your goal",
+      practiceQuestion: null
     };
 
     // 下面四个改成 let，作为mock数据的初始值/兜底值；
     // 如果数据库连接成功，会在 loadAllFromDatabase() 里被真实数据覆盖
     let currentQuestion = null; // 当前正在作答的真实题目（从数据库读取）
 
-    let learningNodes = [
-      { title: "Python Basics", status: "completed", icon: "✓", description: "Syntax, functions, notebooks" },
-      { title: "Statistics", status: "completed", icon: "✓", description: "Mean, variance, probability basics" },
-      { title: "Machine Learning Fundamentals", status: "learning", icon: "↗", description: "Models, training, testing, overfitting" },
-      { title: "Neural Networks", status: "locked", icon: "🔒", description: "Activation functions, layers, gradients" }
-    ];
+    let learningNodes = []; // 初始为空，表示还未生成学习地图
+    let hasLearningGoal = false; // 标记用户是否已确定学习目标
 
-    let mistakes = [
-      {
-        category: "Machine Learning",
-        items: [
-          { topic: "Overfitting", question: "Training accuracy is high but testing accuracy is low. What happened?", reason: "Confused memorization with real generalization.", tag: "Generalization" },
-          { topic: "Feature engineering", question: "Which input feature improves a housing price model?", reason: "Missed how domain signals affect prediction quality.", tag: "Features" }
-        ]
-      },
-      {
-        category: "Statistics",
-        items: [
-          { topic: "Probability", question: "What does a 0.8 predicted probability mean?", reason: "Needs stronger confidence and uncertainty interpretation.", tag: "Probability" }
-        ]
-      }
-    ];
+    let mistakes = []; // 初始为空，表示还没有错题
 
-    let resources = [
-      { type: "Article", title: "Visual Guide to Overfitting", point: "Generalization", reason: "Recommended because recent answers show uncertainty around training vs testing performance.", time: "9 min" },
-      { type: "Video", title: "Linear Regression from Scratch", point: "Machine Learning Fundamentals", reason: "Recommended because your profile prefers project-based explanations.", time: "14 min" },
-      { type: "Documentation", title: "Scikit-learn Model Evaluation", point: "Model validation", reason: "Recommended before your next project so you can measure model performance correctly.", time: "18 min" },
-      { type: "Article", title: "Introduction to Neural Networks", point: "Neural Networks", reason: "Recommended after probability review because activation functions depend on weighted signals.", time: "12 min" }
-    ];
+    let resources = []; // 初始为空，表示还没有推荐的学习资源
 
     /* ============================================================
        数据库读取函数
@@ -1282,6 +1270,12 @@
     }
 
     async function loadNextQuestion() {
+      if (state.practiceQuestion && state.practiceQuestion.generatedByCoach) {
+        currentQuestion = state.practiceQuestion;
+        renderCurrentQuestion();
+        return;
+      }
+
       if (!supabaseClient || !CURRENT_PLAN_ID) return;
 
       const conceptId = await pickActiveConcept();
@@ -1309,7 +1303,20 @@
     }
 
     function renderCurrentQuestion() {
-      if (!currentQuestion) return;
+      const quizPlaceholder = document.getElementById("quizPlaceholder");
+      const quizContent = document.getElementById("quizContent");
+
+      if (!currentQuestion) {
+        // No question available - show placeholder
+        if (quizPlaceholder) quizPlaceholder.style.display = "block";
+        if (quizContent) quizContent.style.display = "none";
+        return;
+      }
+
+      // We have a question - show quiz content
+      if (quizPlaceholder) quizPlaceholder.style.display = "none";
+      if (quizContent) quizContent.style.display = "block";
+
       state.selectedAnswer = null;
 
       const options = Array.isArray(currentQuestion.options)
@@ -1552,11 +1559,13 @@
 
     async function init() {
       renderNav();
+      goTo(state.activePage);
       // 先用mock数据渲染一次，避免数据库请求较慢时页面空白
       renderWorkspaceCoach();
       renderLearningMap();
       renderMistakes();
       renderResources();
+      renderCurrentQuestion();
 
       // 数据库加载完成后，用真实数据重新渲染一次
       await loadAllFromDatabase();
@@ -1564,6 +1573,7 @@
       renderLearningMap();
       renderMistakes();
       renderResources();
+      renderCurrentQuestion();
     }
 
     function renderNav() {
@@ -1579,22 +1589,196 @@
       window.scrollTo({ top: 0, behavior: "smooth" });
     }
 
+    function inferLearningGoal(text) {
+      const lower = (text || "").toLowerCase();
+
+      if (lower.includes("python")) {
+        return { goal: "Learn Python for data science", topic: "Python", focus: "functions, loops, and data manipulation" };
+      }
+      if (lower.includes("statistics") || lower.includes("probability")) {
+        return { goal: "Strengthen statistics and probability", topic: "Statistics", focus: "probability and distributions" };
+      }
+      if (lower.includes("machine learning") || lower.includes("ml") || lower.includes("interview")) {
+        return { goal: "Prepare for machine learning interviews", topic: "Machine Learning", focus: "model evaluation and generalization" };
+      }
+      if (lower.includes("sql") || lower.includes("database")) {
+        return { goal: "Improve SQL querying skills", topic: "SQL", focus: "joins and filters" };
+      }
+      if (lower.includes("frontend") || lower.includes("javascript")) {
+        return { goal: "Build frontend confidence with JavaScript", topic: "JavaScript", focus: "UI logic and DOM interactions" };
+      }
+
+      return {
+        goal: `Build confidence in ${text || "your topic"}`,
+        topic: "Core concepts",
+        focus: "foundations and practical application"
+      };
+    }
+
+    function buildCoachPracticeQuestion(goalText, userText) {
+      const inferred = inferLearningGoal(userText || goalText);
+      const goalLower = (goalText || inferred.goal).toLowerCase();
+      let question = "";
+      let options = [];
+      let answer = "B";
+      let explanation = "";
+      let difficulty = "Medium";
+      let conceptName = inferred.topic;
+
+      if (goalLower.includes("python")) {
+        question = "Which Python loop is best for iterating over a list and summing values efficiently?";
+        options = ["for ... in range", "while", "if/else", "try/except"];
+        answer = "A";
+        explanation = "A simple loop over a known sequence is often the clearest way to process list data in Python.";
+        conceptName = "Python basics";
+        difficulty = "Easy";
+      } else if (goalLower.includes("statistics") || goalLower.includes("probability")) {
+        question = "If a fair coin is flipped twice, what is the probability of getting at least one head?";
+        options = ["0.25", "0.5", "0.75", "1.0"];
+        answer = "C";
+        explanation = "The outcomes with at least one head are HH, HT, and TH, which is 3 out of 4 possibilities.";
+        conceptName = "Probability";
+        difficulty = "Medium";
+      } else if (goalLower.includes("machine learning") || goalLower.includes("ml") || goalLower.includes("interview")) {
+        question = "A model performs well on training data but poorly on new examples. What is the main issue?";
+        options = ["Underfitting", "Overfitting", "Data leakage", "Feature scaling"];
+        answer = "B";
+        explanation = "Overfitting happens when the model memorizes training patterns instead of learning generalizable rules.";
+        conceptName = "Generalization";
+        difficulty = "Medium";
+      } else if (goalLower.includes("sql")) {
+        question = "Which SQL clause filters rows before grouping?";
+        options = ["GROUP BY", "ORDER BY", "WHERE", "HAVING"];
+        answer = "C";
+        explanation = "WHERE filters rows before aggregation or grouping happens.";
+        conceptName = "SQL filtering";
+        difficulty = "Easy";
+      } else {
+        question = `Which action would best help you practice ${inferred.topic.toLowerCase()} today?`;
+        options = ["Review core concepts", "Try a worked example", "Test yourself with a mini challenge", "Ask for a deeper explanation"];
+        answer = "C";
+        explanation = "Active practice is the fastest way to turn a new goal into usable understanding.";
+        conceptName = inferred.topic;
+      }
+
+      return {
+        title: question,
+        options,
+        answer,
+        explanation,
+        difficulty,
+        conceptName,
+        concept_id: null,
+        generatedByCoach: true
+      };
+    }
+
+    // 根据学习目标生成动态学习地图
+    function generateLearningMap(inferred) {
+      const topic = inferred.topic;
+      const goalLower = inferred.goal.toLowerCase();
+      
+      // 预定义不同主题的学习路径
+      const learningPaths = {
+        python: [
+          { title: "Python Basics", status: "learning", icon: "↗", description: "Syntax, variables, and data types" },
+          { title: "Control Flow", status: "locked", icon: "🔒", description: "Loops, conditionals, and functions" },
+          { title: "Data Structures", status: "locked", icon: "🔒", description: "Lists, dictionaries, and tuples" },
+          { title: "Python for Data Science", status: "locked", icon: "🔒", description: "NumPy, Pandas, and data manipulation" }
+        ],
+        statistics: [
+          { title: "Descriptive Statistics", status: "learning", icon: "↗", description: "Mean, median, and mode" },
+          { title: "Probability Basics", status: "locked", icon: "🔒", description: "Probability rules and distributions" },
+          { title: "Inferential Statistics", status: "locked", icon: "🔒", description: "Hypothesis testing and confidence intervals" },
+          { title: "Statistical Modeling", status: "locked", icon: "🔒", description: "Regression and correlation" }
+        ],
+        "machine learning": [
+          { title: "ML Fundamentals", status: "learning", icon: "↗", description: "Models, training, and evaluation" },
+          { title: "Supervised Learning", status: "locked", icon: "🔒", description: "Classification and regression" },
+          { title: "Unsupervised Learning", status: "locked", icon: "🔒", description: "Clustering and dimensionality reduction" },
+          { title: "Neural Networks", status: "locked", icon: "🔒", description: "Deep learning basics" }
+        ],
+        sql: [
+          { title: "SQL Basics", status: "learning", icon: "↗", description: "SELECT, FROM, and WHERE clauses" },
+          { title: "Data Filtering", status: "locked", icon: "🔒", description: "JOINs, GROUP BY, and HAVING" },
+          { title: "Advanced Queries", status: "locked", icon: "🔒", description: "Subqueries and window functions" },
+          { title: "Database Design", status: "locked", icon: "🔒", description: "Normalization and schema design" }
+        ]
+      };
+      
+      // 根据主题匹配学习路径，或返回通用路径
+      let path;
+      if (goalLower.includes("python")) {
+        path = learningPaths.python;
+      } else if (goalLower.includes("statistics") || goalLower.includes("probability")) {
+        path = learningPaths.statistics;
+      } else if (goalLower.includes("machine learning") || goalLower.includes("ml")) {
+        path = learningPaths["machine learning"];
+      } else if (goalLower.includes("sql")) {
+        path = learningPaths.sql;
+      } else {
+        // 通用学习路径
+        path = [
+          { title: `${topic} Fundamentals`, status: "learning", icon: "↗", description: "Core concepts and basics" },
+          { title: `${topic} Intermediate`, status: "locked", icon: "🔒", description: "Building on foundational knowledge" },
+          { title: `${topic} Advanced`, status: "locked", icon: "🔒", description: "Complex topics and applications" },
+          { title: `${topic} Mastery`, status: "locked", icon: "🔒", description: "Expert-level understanding" }
+        ];
+      }
+      
+      return path;
+    }
+
+    function applyCoachGoalAndQuestion(text) {
+      const inferred = inferLearningGoal(text);
+      state.learningGoal = inferred.goal;
+      state.coachStatus = `Tailoring practice around ${inferred.topic.toLowerCase()}`;
+      state.practiceQuestion = buildCoachPracticeQuestion(inferred.goal, text);
+      currentQuestion = state.practiceQuestion;
+      
+      // 生成动态学习地图
+      hasLearningGoal = true;
+      learningNodes = generateLearningMap(inferred);
+      renderLearningMap(); // 更新学习地图显示
+      
+      state.suggestedReplies = [
+        `Practice ${inferred.topic} with me`,
+        `Make the next question harder`,
+        `Explain the reasoning behind the answer`
+      ];
+      renderCurrentQuestion();
+      return inferred;
+    }
+
     function renderWorkspaceCoach() {
       const messagesContainer = document.getElementById("workspaceMessages");
       const choicesContainer = document.getElementById("workspaceChoiceArea");
+      const coachGoalText = document.getElementById("coachGoalText");
+      const coachRecText = document.getElementById("coachRecText");
+
+      coachGoalText.textContent = state.learningGoal || "Not set yet";
+      coachRecText.textContent = state.coachStatus || "Waiting for your goal";
 
       messagesContainer.innerHTML = state.chatHistory.map(msg => `
         <div class="msg ${msg.sender === 'ai' ? 'ai' : 'user'}">${msg.text}</div>
       `).join("");
       messagesContainer.scrollTop = messagesContainer.scrollHeight;
 
-      choicesContainer.innerHTML = state.suggestedReplies.map(reply => `
-        <button class="choice" onclick="handleCoachInteraction('${reply}')">${reply}</button>
-      `).join("");
+      // Show/hide choices container based on whether goal is set
+      if (choicesContainer) {
+        if (hasLearningGoal) {
+          choicesContainer.style.display = "none";
+        } else {
+          choicesContainer.style.display = "flex";
+          choicesContainer.innerHTML = state.suggestedReplies.map(reply => `
+            <button class="choice" onclick="handleCoachInteraction('${reply}')">${reply}</button>
+          `).join("");
+        }
+      }
     }
 
     async function requestCoachReply(text) {
-      const goalText = document.getElementById("coachGoalText")?.textContent || "Become a Machine Learning Engineer";
+      const goalText = state.learningGoal !== "Not set yet" ? state.learningGoal : "No goal chosen yet";
 
       try {
         const response = await fetch(AI_CHAT_ENDPOINT, {
@@ -1608,14 +1792,16 @@
         }
 
         const data = await response.json();
-        return data.reply || "我已经收到你的问题，正在为你整理更贴合目标的建议。";
+        return data.reply || "I’ve mapped your message into a learning plan and prepared a tailored challenge.";
       } catch (error) {
         console.error("AI Coach request failed:", error);
-        return "我暂时无法连接到 AI 服务，请稍后再试。";
+        const inferred = inferLearningGoal(text);
+        return `I’ve turned your goal into a focused plan: ${inferred.goal}. I’m tailoring a practice question around ${inferred.topic.toLowerCase()}.`;
       }
     }
 
     async function handleCoachInteraction(text) {
+      const inferred = applyCoachGoalAndQuestion(text);
       state.chatHistory.push({ sender: "user", text });
       renderWorkspaceCoach();
       saveChatMessage("user", text);
@@ -1624,6 +1810,7 @@
       state.chatHistory.push({ sender: "ai", text: aiReply });
       renderWorkspaceCoach();
       saveChatMessage("assistant", aiReply);
+      showToastNotification(`Goal set: ${inferred.goal}`);
     }
 
     /* CAPTURING USER TEXTAREA INPUT */
@@ -1632,6 +1819,7 @@
       const text = inputEl.value.trim();
       if (!text) return;
 
+      const inferred = applyCoachGoalAndQuestion(text);
       state.chatHistory.push({ sender: "user", text });
       inputEl.value = "";
       renderWorkspaceCoach();
@@ -1641,6 +1829,7 @@
       state.chatHistory.push({ sender: "ai", text: aiReply });
       renderWorkspaceCoach();
       saveChatMessage("assistant", aiReply);
+      showToastNotification(`Goal set: ${inferred.goal}`);
     }
 
     function handleTextAreaKey(event) {
@@ -1875,51 +2064,101 @@
 
     function renderLearningMap() {
       const map = document.getElementById("learningMap");
-      map.innerHTML = learningNodes.map(node => `
-        <div class="node ${node.status}">
-          <div class="node-icon">${node.icon}</div>
-          <div>
-            <h3>${node.title}</h3>
-            <p style="margin:0">${node.description}</p>
+      
+      if (!hasLearningGoal || learningNodes.length === 0) {
+        // 初始状态：还未确定学习目标
+        map.innerHTML = `
+          <div style="text-align: center; padding: 40px 20px;">
+            <div style="font-size: 4rem; margin-bottom: 20px;">🎯</div>
+            <h3 style="margin-bottom: 16px;">Ready to start your learning journey?</h3>
+            <p style="color: var(--muted); margin-bottom: 24px; max-width: 400px; margin-left: auto; margin-right: auto;">
+              Tell Sherpa what you want to learn, and we'll create a personalized learning map just for you.
+            </p>
+            <button class="primary" onclick="goTo('workspace')">Start with AI Coach</button>
           </div>
-          <span class="badge ${node.status === "completed" ? "green" : node.status === "learning" ? "purple" : ""}">${node.status}</span>
-        </div>
-      `).join("");
+        `;
+      } else {
+        // 有学习目标时：显示动态学习地图
+        map.innerHTML = learningNodes.map(node => `
+          <div class="node ${node.status}">
+            <div class="node-icon">${node.icon}</div>
+            <div>
+              <h3>${node.title}</h3>
+              <p style="margin:0">${node.description}</p>
+            </div>
+            <span class="badge ${node.status === "completed" ? "green" : node.status === "learning" ? "purple" : ""}">${node.status}</span>
+          </div>
+        `).join("");
+      }
     }
 
     function renderMistakes() {
-      document.getElementById("mistakeGrid").innerHTML = mistakes.map(group => `
-        <div class="card mistake">
-          <div class="category-title">
-            <h3>${group.category}</h3>
-            <span class="badge red">${group.items.length} gaps</span>
+      const mistakeGrid = document.getElementById("mistakeGrid");
+      
+      if (mistakes.length === 0) {
+        // 初始状态：还没有错题
+        mistakeGrid.innerHTML = `
+          <div style="text-align: center; padding: 60px 20px; grid-column: 1 / -1;">
+            <div style="font-size: 4rem; margin-bottom: 20px;">✅</div>
+            <h3 style="margin-bottom: 16px;">No mistakes yet!</h3>
+            <p style="color: var(--muted); max-width: 400px; margin: 0 auto;">
+              Start practicing in the Learning Workspace, and any mistakes you make will appear here for review.
+            </p>
+            <button class="primary" style="margin-top: 24px;" onclick="goTo('workspace')">Start Practicing</button>
           </div>
-          ${group.items.map(item => `
-            <div class="insight" style="margin-bottom: 12px;">
-              <span class="badge purple">${item.topic}</span>
-              <p><b>Original question:</b> ${item.question}</p>
-              <p><b>Error reason:</b> ${item.reason}</p>
-              <p><b>Related knowledge point:</b> ${item.tag}</p>
-              <button class="secondary" onclick="goTo('workspace')">Retry</button>
+        `;
+      } else {
+        // 有错题时显示正常内容
+        mistakeGrid.innerHTML = mistakes.map(group => `
+          <div class="card mistake">
+            <div class="category-title">
+              <h3>${group.category}</h3>
+              <span class="badge red">${group.items.length} gaps</span>
             </div>
-          `).join("")}
-        </div>
-      `).join("");
+            ${group.items.map(item => `
+              <div class="insight" style="margin-bottom: 12px;">
+                <span class="badge purple">${item.topic}</span>
+                <p><b>Original question:</b> ${item.question}</p>
+                <p><b>Error reason:</b> ${item.reason}</p>
+                <p><b>Related knowledge point:</b> ${item.tag}</p>
+                <button class="secondary" onclick="goTo('workspace')">Retry</button>
+              </div>
+            `).join("")}
+          </div>
+        `).join("");
+      }
     }
 
     function renderResources() {
-      document.getElementById("resourceGrid").innerHTML = resources.map(resource => `
-        <div class="resource">
-          <div class="category-title">
-            <span class="badge blue">${resource.type}</span>
-            <span class="badge">${resource.time}</span>
+      const resourceGrid = document.getElementById("resourceGrid");
+      
+      if (resources.length === 0) {
+        // 初始状态：还没有推荐资源
+        resourceGrid.innerHTML = `
+          <div style="text-align: center; padding: 60px 20px; grid-column: 1 / -1;">
+            <div style="font-size: 4rem; margin-bottom: 20px;">📖</div>
+            <h3 style="margin-bottom: 16px;">No resources yet!</h3>
+            <p style="color: var(--muted); max-width: 400px; margin: 0 auto;">
+              Once you start learning, Sherpa will recommend personalized resources based on your knowledge gaps and progress.
+            </p>
+            <button class="primary" style="margin-top: 24px;" onclick="goTo('workspace')">Start Learning</button>
           </div>
-          <h3>${resource.title}</h3>
-          <p><b>Knowledge point:</b> ${resource.point}</p>
-          <p><b>Why:</b> ${resource.reason}</p>
-          <button class="ghost">Save resource</button>
-        </div>
-      `).join("");
+        `;
+      } else {
+        // 有资源时显示正常内容
+        resourceGrid.innerHTML = resources.map(resource => `
+          <div class="resource">
+            <div class="category-title">
+              <span class="badge blue">${resource.type}</span>
+              <span class="badge">${resource.time}</span>
+            </div>
+            <h3>${resource.title}</h3>
+            <p><b>Knowledge point:</b> ${resource.point}</p>
+            <p><b>Why:</b> ${resource.reason}</p>
+            <button class="ghost">Save resource</button>
+          </div>
+        `).join("");
+      }
     }
 
     bootstrapApp();
