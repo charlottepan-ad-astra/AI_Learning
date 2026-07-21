@@ -5,3 +5,5 @@ api_key.py
 数据库\supabase教程.md
 node_modules/
 package-lock.json
+.workbuddy/
+.workbuddy/memory
