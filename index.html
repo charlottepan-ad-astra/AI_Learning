@@ -1120,6 +1120,7 @@
     ];
 
     const AI_CHAT_ENDPOINT = "http://127.0.0.1:3000/api/chat";
+    const AI_Q_ENDPOINT = "http://127.0.0.1:3000/api/generate-question";
 
     const state = {
       activePage: "landing",
@@ -1447,6 +1448,12 @@
       if (state.practiceQuestion && state.practiceQuestion.generatedByCoach) {
         currentQuestion = state.practiceQuestion;
         renderCurrentQuestion();
+        return;
+      }
+
+      // 已确定目标且没有当前题目：让 AI 根据 Learning Goal 动态出题（无 server 时回退 DB/引导题）
+      if (!currentQuestion) {
+        await generateQuestionFromAI();
         return;
       }
 
@@ -1887,6 +1894,7 @@
 
     function inferLearningGoal(text) {
       const lower = (text || "").toLowerCase();
+      const raw = (text || "").trim();
 
       if (lower.includes("python")) {
         return { goal: "Learn Python for data science", topic: "Python", focus: "functions, loops, and data manipulation" };
@@ -1904,9 +1912,15 @@
         return { goal: "Build frontend confidence with JavaScript", topic: "JavaScript", focus: "UI logic and DOM interactions" };
       }
 
+      // 语言类或任意主题：从用户原文中提取具体学习目标（去掉“我想学 / help me”等引导词）
+      const cleaned = raw
+        .replace(/^(i\s*(want|'?d|would)\s*(to\s*)?(learn|study|get started with|practice|master|improve)|help me (with|get started|learn)|learn\s*|study\s*|practice\s*)/i, "")
+        .replace(/[.!?。！？]+$/g, "")
+        .trim();
+      const topic = (cleaned && cleaned.length > 0 && cleaned.length <= 40) ? cleaned : "Core concepts";
       return {
-        goal: `Build confidence in ${text || "your topic"}`,
-        topic: "Core concepts",
+        goal: `Build confidence in ${topic}`,
+        topic,
         focus: "foundations and practical application"
       };
     }
@@ -2034,21 +2048,35 @@
 
     function applyCoachGoalAndQuestion(text) {
       const inferred = inferLearningGoal(text);
+      const wasUnset = state.learningGoal === "Not set yet";
+      const goalChanged = state.learningGoal !== inferred.goal;
       state.learningGoal = inferred.goal;
+      state.learningTopic = inferred.topic;
       state.coachStatus = `Tailoring practice around ${inferred.topic.toLowerCase()}`;
-      state.practiceQuestion = buildCoachPracticeQuestion(inferred.goal, text);
-      currentQuestion = state.practiceQuestion;
-
-      // 生成动态学习地图
-      hasLearningGoal = true;
-      learningNodes = generateLearningMap(inferred);
-      renderLearningMap(); // 更新学习地图显示
-
       state.suggestedReplies = [
         `Practice ${inferred.topic} with me`,
         `Make the next question harder`,
         `Explain the reasoning behind the answer`
       ];
+
+      // 仅在“尚未确定目标（首次）”或“当前就是引导题”时才生成/刷新元认知引导题；
+      // 否则（已经在做 AI 动态练习题）绝不覆盖，避免界面来回跳变/闪退。
+      const showGuidance = wasUnset
+        || !currentQuestion
+        || (currentQuestion && currentQuestion.questionType === "coach_guidance");
+      if (showGuidance) {
+        state.practiceQuestion = buildCoachPracticeQuestion(inferred.goal, text);
+        currentQuestion = state.practiceQuestion;
+      } else if (goalChanged) {
+        // 目标发生变化：刷新一道按新目标出的题（异步，不阻塞 UI）
+        generateQuestionFromAI();
+      }
+
+      // 生成动态学习地图
+      hasLearningGoal = true;
+      learningNodes = generateLearningMap(inferred);
+      renderLearningMap();
+
       renderCurrentQuestion();
 
       // 把"用户想学什么"持久化到 DB（fire-and-forget，不阻塞 UI）：
@@ -2088,14 +2116,39 @@
       }
     }
 
+    // 把页面聊天记录整理成合法的多轮 messages：去掉空内容、合并连续相同角色，
+    // 确保 user/assistant 严格交替。否则后端拿到错乱历史，AI 会把上下文误认成用户的话（答非所问）。
+    function normalizeCoachHistory(msgs) {
+      const out = [];
+      for (const m of msgs) {
+        const role = m.sender === "user" ? "user" : "assistant";
+        const content = String(m.text || "").trim();
+        if (!content) continue;
+        const last = out[out.length - 1];
+        if (last && last.role === role) {
+          last.content += "\n" + content;
+        } else {
+          out.push({ role, content });
+        }
+      }
+      while (out.length && out[0].role === "assistant") out.shift();
+      return out;
+    }
+
     async function requestCoachReply(text) {
       const goalText = state.learningGoal !== "Not set yet" ? state.learningGoal : "No goal chosen yet";
+
+      // 用完整对话历史构造多轮 messages，避免 AI 每次都把消息当“第一次对话”反复问初始化问题
+      const history = normalizeCoachHistory(state.chatHistory);
 
       try {
         const response = await fetch(AI_CHAT_ENDPOINT, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userMessage: text, learningGoal: goalText })
+          body: JSON.stringify({
+            messages: [...history, { role: "user", content: text }],
+            learningGoal: goalText
+          })
         });
 
         if (!response.ok) {
@@ -2151,12 +2204,8 @@
     }
 
     function selectWorkspaceOption(element, indexOrAnswer) {
-      if (currentQuestion && typeof indexOrAnswer === "number") {
-        const options = Array.isArray(currentQuestion.options) ? currentQuestion.options : JSON.parse(currentQuestion.options || "[]");
-        state.selectedAnswer = options[indexOrAnswer];
-      } else {
-        state.selectedAnswer = indexOrAnswer; // 数据库未连接时的静态demo，直接用字母值
-      }
+      // 统一存数字索引，与 onclick="selectWorkspaceOption(this, ${i})" 一致；提交时再按索引还原选项文本/字母
+      state.selectedAnswer = indexOrAnswer;
       element.parentNode.querySelectorAll(".option").forEach(option => option.classList.remove("selected"));
       element.classList.add("selected");
     }
@@ -2345,7 +2394,8 @@
         return submitWorkspaceQuizFallback();
       }
 
-      const correct = state.selectedAnswer === currentQuestion.answer;
+      const chosenLetter = ["A", "B", "C", "D", "E"][state.selectedAnswer];
+      const correct = chosenLetter === currentQuestion.answer;
 
       // Coach-generated questions have no DB id yet — persist first so they get a
       // real id + concept_id and can be tracked correctly in the mistake book.
@@ -2388,7 +2438,10 @@
         });
 
         await updateWrongQuestion(qId, correct);
-        const progress = await updateLearningProgress(currentQuestion.concept_id, correct);
+        let progress = { mastery: 0 };
+        if (currentQuestion.concept_id) {
+          progress = await updateLearningProgress(currentQuestion.concept_id, correct);
+        }
 
         renderQuizFeedback(correct, progress);
         await fetchLearningMap();
@@ -2415,42 +2468,99 @@
       }
     }
 
-    // Coach guidance submission — conversational, no right/wrong, no DB writes
+    // Coach guidance submission — conversational, no right/wrong, no DB writes.
+    // 根据用户选择调用 AI 生成个性化回应，并加载一道真正由 AI 按 Goal 出的练习题。
     async function submitCoachGuidance() {
+      if (submitCoachGuidance.busy) return; // 防止双击/重复触发导致 "I'd like to:" 重复出现
+      submitCoachGuidance.busy = true;
+      try {
       const options = Array.isArray(currentQuestion.options)
         ? currentQuestion.options
         : JSON.parse(currentQuestion.options || "[]");
-      const choiceText = options[state.selectedAnswer] || `Option ${state.selectedAnswer}`;
+      const choiceIndex = (typeof state.selectedAnswer === "number") ? state.selectedAnswer : 0;
+      const choiceText = options[choiceIndex] || `Option ${choiceIndex}`;
       const topic = currentQuestion.conceptName || "this topic";
 
-      // Build conversational AI response based on user's choice
-      const responses = {
-        "Review core concepts": `Great idea! Let's review the fundamentals of ${topic} together. Here's a quick summary of the key concepts you should know... Why don't we start with a basic question to warm up?`,
-        "Try a worked example": `Perfect — worked examples are one of the most effective ways to learn! Let me walk you through a detailed example on ${topic}. Once you're comfortable, we'll try a similar problem for you to solve.`,
-        "Test yourself with a mini challenge": `Love the proactive approach! Let me pull together a quick challenge on ${topic} for you right now. Ready?`,
-        "Ask for a deeper explanation": `Of course! Deep understanding beats memorization every time. Let me break down ${topic} in more detail — here's what you need to know at a foundational level before we dive into practice...`
-      };
-      const aiReply = responses[choiceText] || `Thanks for sharing your preference! Let me tailor the ${topic} content to match your learning style — starting with a question that suits your approach.`;
-
-      // Add to chat history
+      // 把用户的选择作为真实对话消息，请求 AI 个性化回应（带多轮上下文，避免循环）
       state.chatHistory.push({ sender: "user", text: `I'd like to: ${choiceText}` });
+      renderWorkspaceCoach();
+      if (supabaseClient) saveChatMessage("user", `I'd like to: ${choiceText}`);
+
+      const aiReply = await requestCoachReply(`For practicing ${topic}, I chose: ${choiceText}. Please give me a tailored next step.`);
       state.chatHistory.push({ sender: "ai", text: aiReply });
       renderWorkspaceCoach();
-
-      if (supabaseClient) {
-        saveChatMessage("user", `I'd like to: ${choiceText}`);
-        saveChatMessage("assistant", aiReply);
-      }
+      if (supabaseClient) saveChatMessage("assistant", aiReply);
 
       showToastNotification("Learning path updated based on your choice");
 
-      // Clear the used guidance question and load a real quiz
+      // 清空引导题，加载一道真正由 AI 根据 Learning Goal 生成的练习题（不再弹同类引导题，避免循环/闪退）
       state.practiceQuestion = null;
       currentQuestion = null;
-      setTimeout(async () => {
-        await loadNextQuestion();
+      renderCurrentQuestion();
+      try {
+        await generateQuestionFromAI();
+      } catch (err) {
+        console.error("加载 AI 题目失败:", err);
+      }
+      } finally {
+        submitCoachGuidance.busy = false;
+      }
+    }
+
+    // 让 AI 根据当前 Learning Goal 动态生成一道带标准答案的练习题
+    async function generateQuestionFromAI() {
+      if (state.learningGoal === "Not set yet") {
+        // 还没确定目标：退回元认知引导题
+        state.practiceQuestion = buildCoachPracticeQuestion("", "");
+        currentQuestion = state.practiceQuestion;
         renderCurrentQuestion();
-      }, 500);
+        return;
+      }
+
+      // 用已保存的真实 topic（不要从 goal 字符串重新推断，否则会解析出错主题）
+      const inferred = { topic: state.learningTopic || "Core concepts", focus: "core concepts" };
+      const previousQuestion = currentQuestion ? currentQuestion.title : "";
+
+      try {
+        const response = await fetch(AI_Q_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            goal: state.learningGoal,
+            topic: inferred.topic,
+            focus: inferred.focus,
+            difficulty: "Medium",
+            previousQuestion
+          })
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        const q = data.question;
+        if (!q || !q.title || !Array.isArray(q.options) || q.options.length < 2 || !q.answer) {
+          throw new Error("模型返回的题目格式不正确");
+        }
+        currentQuestion = {
+          title: q.title,
+          options: q.options,
+          answer: q.answer,                 // "A" | "B" | "C" | "D"
+          explanation: q.explanation || "",
+          difficulty: q.difficulty || "Medium",
+          conceptName: q.knowledge_point || inferred.topic,
+          topic: inferred.topic,
+          concept_id: null,
+          generatedByCoach: true,
+          questionType: "quiz"              // 有标准答案，走评分流程、可进错题本
+        };
+        renderCurrentQuestion();
+      } catch (err) {
+        console.error("AI 出题失败，退回引导题:", err);
+        // 兜底：仅在还没有题目时给一道引导题，避免覆盖正在做的题
+        if (!currentQuestion) {
+          state.practiceQuestion = buildCoachPracticeQuestion(state.learningGoal, state.learningGoal);
+          currentQuestion = state.practiceQuestion;
+          renderCurrentQuestion();
+        }
+      }
     }
 
     // 数据库未配置时的静态demo效果，保持和原来一样，方便没连库也能预览界面
@@ -2485,7 +2595,8 @@
         return;
       }
 
-      const correct = state.selectedAnswer === "B";
+      const chosenLetter = ["A", "B", "C", "D", "E"][state.selectedAnswer];
+      const correct = chosenLetter === currentQuestion.answer;
       const resultCard = document.getElementById("workspaceResultCard");
       resultCard.classList.toggle("incorrect", !correct);
 

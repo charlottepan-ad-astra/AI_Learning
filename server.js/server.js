@@ -18,19 +18,47 @@ app.get('/', (_req, res) => {
   res.json({
     status: 'ok',
     message: 'Sherpa AI backend is running.',
-    endpoints: ['/health', '/api/chat', '/api/ai-feedback']
+    endpoints: ['/health', '/api/chat', '/api/ai-feedback', '/api/generate-question']
   });
 });
 
-// 接口 1：AI Coach 智能对话响应
+// 把前端传来的对话历史整理成合法的 user/assistant 交替序列：
+//  - 任何非 user/assistant 的角色（含误传的 system）强制降级为 user
+//  - 丢弃空内容，合并连续相同角色，移除开头的 assistant
+//  这样即使前端传错，也绝不会把系统提示词当成回复来源，也不会因历史错乱而答非所问
+function sanitizeHistory(msgs) {
+  const out = [];
+  for (const m of (Array.isArray(msgs) ? msgs : [])) {
+    const role = m && m.role === "assistant" ? "assistant" : "user";
+    const content = (m && typeof m.content === "string") ? m.content.trim() : "";
+    if (!content) continue;
+    const last = out[out.length - 1];
+    if (last && last.role === role) {
+      last.content += "\n" + content;
+    } else {
+      out.push({ role, content });
+    }
+  }
+  while (out.length && out[0].role === "assistant") out.shift();
+  return out;
+}
+
+// 接口 1：AI Coach 智能对话响应（支持多轮上下文）
 app.post('/api/chat', async (req, res) => {
-  const { userMessage, learningGoal } = req.body;
+  // messages: 前端传来的完整对话历史（user/assistant 交替）；单轮调用时回退到 userMessage
+  const { userMessage, learningGoal, messages } = req.body;
 
   if (!process.env.OPENAI_API_KEY) {
     return res.status(500).json({ reply: "服务端尚未配置 OPENAI_API_KEY，请先设置环境变量后再试。" });
   }
 
   try {
+    const history = sanitizeHistory(
+      Array.isArray(messages) && messages.length
+        ? messages
+        : [{ role: "user", content: userMessage || "" }]
+    );
+
     const completion = await openai.chat.completions.create({
       model: process.env.OPENAI_MODEL || "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
       messages: [
@@ -133,7 +161,7 @@ Keep responses **focused and skimmable**. Use this loose template:
 ---
 
 ### **INITIALIZATION (first turn only)**
-When the conversation starts and the user has NOT yet been profiled, ask exactly these (in their language), all in one short message:
+When the conversation starts AND the user has NOT yet been profiled (i.e. the supplied message history is empty), ask exactly these (in their language), all in one short message:
 1. "What subject do you want to conquer today?"
 2. "What is your preferred learning style?
    (A) Hands-on projects — learn by building
@@ -159,7 +187,7 @@ You MUST respond in the **exact same language** the user writes in. No code-swit
 - Treat all earlier turns in this conversation as your memory of this learner. Reference them naturally; never pretend the chat just started.
 `
         },
-        { role: "user", content: userMessage }
+        ...history
       ],
       temperature: 0.7,
       max_tokens: 1000
@@ -169,6 +197,71 @@ You MUST respond in the **exact same language** the user writes in. No code-swit
   } catch (error) {
     console.error("Chat API error:", error.message);
     res.status(500).json({ reply: "我暂时无法连接到 AI 服务，请稍后再试。" });
+  }
+});
+
+// 接口 3：AI 根据学习目标动态生成练习题（结构化 JSON）
+app.post('/api/generate-question', async (req, res) => {
+  const { goal, topic, focus, difficulty, previousQuestion } = req.body;
+
+  if (!process.env.OPENAI_API_KEY) {
+    return res.status(500).json({ error: "服务端尚未配置 OPENAI_API_KEY。" });
+  }
+
+  const sysPrompt = `You are an expert question designer for a personalized learning platform.
+Generate ONE high-quality multiple-choice practice question tailored to the learner's goal.
+Return ONLY a single valid JSON object (no markdown fences, no commentary) with exactly this shape:
+{
+  "title": "the question text",
+  "options": ["option A text", "option B text", "option C text", "option D text"],
+  "answer": "A",
+  "explanation": "why the correct answer is right",
+  "difficulty": "Easy|Medium|Hard",
+  "knowledge_point": "the specific concept this question tests"
+}
+Rules:
+- Exactly 4 options, exactly one correct, answer is "A","B","C" or "D".
+- Do NOT repeat the previous question if one is provided.
+- Match the learner's language.`;
+
+  const userPrompt = `Learning goal: ${goal || "general learning"}
+Topic to practice: ${topic || "the goal topic"}
+Focus: ${focus || "core concepts"}
+Difficulty: ${difficulty || "Medium"}
+${previousQuestion ? `Do NOT repeat this question: "${previousQuestion}"` : ""}
+Now output the JSON question.`;
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model: process.env.OPENAI_MODEL || "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
+      messages: [
+        { role: "system", content: sysPrompt },
+        { role: "user", content: userPrompt }
+      ],
+      temperature: 0.8,
+      max_tokens: 1500
+    });
+
+    let raw = completion.choices[0].message.content || "{}";
+    // 去除 DeepSeek-R1 等推理模型的 <think>...</think> 思考块，以及可能的 markdown 代码围栏
+    raw = raw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+    raw = raw.replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
+    // 容错：只截取第一个 { 到最后一个 } 之间的内容
+    const start = raw.indexOf("{");
+    const end = raw.lastIndexOf("}");
+    if (start !== -1 && end !== -1 && end > start) {
+      raw = raw.slice(start, end + 1);
+    }
+    const question = JSON.parse(raw);
+
+    if (!question.title || !Array.isArray(question.options) || question.options.length < 2 || !question.answer) {
+      throw new Error("Malformed question from model");
+    }
+
+    res.json({ question });
+  } catch (error) {
+    console.error("Generate question error:", error.message);
+    res.status(500).json({ error: "AI 生成题目失败，请重试。" });
   }
 });
 
