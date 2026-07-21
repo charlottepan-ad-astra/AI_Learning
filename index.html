@@ -1122,6 +1122,15 @@
     const AI_CHAT_ENDPOINT = "http://127.0.0.1:3000/api/chat";
     const AI_Q_ENDPOINT = "http://127.0.0.1:3000/api/generate-question";
     const AI_EXTRACT_GOAL_ENDPOINT = "http://127.0.0.1:3000/api/extract-goal";
+    const AI_GRADE_ENDPOINT = "http://127.0.0.1:3000/api/grade-answer";
+    // 题型轮转：让右侧测验在 选择题 / 填空题 / 简答题 之间变化，避免永远是选择题
+    let quizTypeRotation = 0;
+    function nextQuizType() {
+      const types = ["multiple_choice", "fill_blank", "short_answer"];
+      const t = types[quizTypeRotation % types.length];
+      quizTypeRotation++;
+      return t;
+    }
 
     const state = {
       activePage: "landing",
@@ -1501,37 +1510,63 @@
 
       state.selectedAnswer = null;
 
-      const options = Array.isArray(currentQuestion.options)
-        ? currentQuestion.options
-        : JSON.parse(currentQuestion.options || "[]");
-      const letters = ["A", "B", "C", "D", "E"];
-
+      const type = currentQuestion.type || "multiple_choice";
       const isGuidance = currentQuestion.questionType === "coach_guidance";
 
-      // Badge & subtitle
+      // Badge & subtitle（按题型变化）
       const badgeEl = document.getElementById("quizBadgeType");
       const subtitleEl = document.getElementById("quizSubtitle");
       const submitBtn = document.getElementById("workspaceSubmitBtn");
-      if (badgeEl) {
-        badgeEl.textContent = isGuidance ? "Learning Guide" : "AI Generated Quiz";
-        badgeEl.className = isGuidance ? "badge teal" : "badge red";
+      let badgeText = "AI Generated Quiz", badgeClass = "badge red", subtitle = "Personalized practice", submitText = "Submit answer";
+      if (isGuidance) {
+        badgeText = "Learning Guide"; badgeClass = "badge teal"; subtitle = "Choose your learning path"; submitText = "Confirm your choice";
+      } else if (type === "fill_blank") {
+        badgeText = "Fill in the blanks"; badgeClass = "badge amber"; subtitle = "Complete the sentence";
+      } else if (type === "short_answer") {
+        badgeText = "Short answer"; badgeClass = "badge purple"; subtitle = "Write your answer";
       }
-      if (subtitleEl) {
-        subtitleEl.textContent = isGuidance ? "Choose your learning path" : "Personalized practice";
-      }
-      if (submitBtn) {
-        submitBtn.textContent = isGuidance ? "Confirm your choice" : "Submit answer";
-      }
+      if (badgeEl) { badgeEl.textContent = badgeText; badgeEl.className = badgeClass; }
+      if (subtitleEl) subtitleEl.textContent = subtitle;
+      if (submitBtn) submitBtn.textContent = submitText;
 
       document.getElementById("workspaceQuizDifficulty").textContent = `Difficulty: ${currentQuestion.difficulty || "Medium"}`;
       document.getElementById("workspaceQuizKP").textContent = `Knowledge point: ${currentQuestion.conceptName}`;
-      document.getElementById("workspaceQuizPrompt").textContent = currentQuestion.title;
 
-      document.getElementById("workspaceOptionsContainer").innerHTML = options.map((opt, i) => `
-        <button class="option${isGuidance ? ' guidance' : ''}" onclick="selectWorkspaceOption(this, ${i})"><span class="badge">${letters[i]}</span> ${opt}</button>
-      `).join("");
+      const promptEl = document.getElementById("workspaceQuizPrompt");
+      const optContainer = document.getElementById("workspaceOptionsContainer");
+
+      if (type === "multiple_choice" || isGuidance) {
+        const options = Array.isArray(currentQuestion.options)
+          ? currentQuestion.options
+          : JSON.parse(currentQuestion.options || "[]");
+        const letters = ["A", "B", "C", "D", "E"];
+        promptEl.textContent = currentQuestion.title;
+        optContainer.innerHTML = options.map((opt, i) => `
+          <button class="option${isGuidance ? ' guidance' : ''}" onclick="selectWorkspaceOption(this, ${i})"><span class="badge">${letters[i]}</span> ${opt}</button>
+        `).join("");
+      } else if (type === "fill_blank") {
+        // 把标题里的 ___ 替换为输入框，其余文字保留
+        const parts = String(currentQuestion.title).split(/_{3,}/);
+        promptEl.innerHTML = parts.map((part, i) =>
+          i < parts.length - 1
+            ? `${escapeHtml(part)} <input class="blank-input" type="text" placeholder="blank ${i + 1}" style="width:130px; padding:6px 8px; border:1px solid rgba(0,0,0,0.25); border-radius:8px; font-size:0.9rem;" />`
+            : escapeHtml(part)
+        ).join("");
+        optContainer.innerHTML = `<p style="color:#6b7280; font-size:0.85rem; margin:0;">在空格处填入正确单词 / 短语，然后点 “Submit answer”。</p>`;
+      } else if (type === "short_answer") {
+        promptEl.textContent = currentQuestion.title;
+        optContainer.innerHTML = `
+          <textarea id="workspaceShortAnswer" rows="4" placeholder="在此输入你的回答（1-3 句话）..." style="width:100%; padding:12px; border:1px solid rgba(0,0,0,0.25); border-radius:12px; font-size:0.95rem; resize:vertical;"></textarea>`;
+      }
 
       document.getElementById("workspaceFeedbackCollapse").classList.remove("expanded");
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+    function normAnswer(s) {
+      return String(s).trim().toLowerCase().replace(/[^\w一-龥]+/g, "");
     }
 
     async function saveChatMessage(role, content) {
@@ -2105,6 +2140,9 @@
        从而解决“学习目标从通用按钮文字硬抽、与聊天内容无关”的问题。
        ============================================================ */
     async function extractGoalFromConversation() {
+      // 目标一旦锁定就停止重复提取/出题，避免每条消息都打接口、覆盖正在做的题
+      if (state.learningGoal !== "Not set yet") return;
+
       const history = normalizeCoachHistory(state.chatHistory);
       if (history.length === 0) return;
 
@@ -2128,6 +2166,9 @@
         renderLearningMap();
         persistInferredGoal({ goal, topic });
         renderWorkspaceCoach();
+
+        // 目标刚锁定：在右侧生成第一道真正的测验题，避免 quiz 面板空着/被架空
+        try { await generateQuestionFromAI(); } catch (e) { console.error("首题生成失败:", e); }
       } catch (err) {
         console.error("提取学习目标失败:", err);
         // 失败不阻塞：保留当前 goal（可能是 Not set yet 或本地兜底值）
@@ -2418,7 +2459,7 @@
             user_id: CURRENT_USER_ID,
             concept_id: conceptId,
             title: q.title,
-            question_type: "单选",
+            question_type: q.type === "fill_blank" ? "填空" : q.type === "short_answer" ? "简答" : "单选",
             difficulty: q.difficulty || "Medium",
             options: options,
             answer: q.answer || "",
@@ -2438,34 +2479,65 @@
     }
 
     async function submitWorkspaceQuiz() {
-      if (!state.selectedAnswer) {
-        alert("Choose an answer first so Sherpa can analyze it.");
-        return;
-      }
-
       // ── Coach guidance question: route through conversation, skip DB scoring ──
       if (currentQuestion && currentQuestion.questionType === "coach_guidance") {
         return submitCoachGuidance();
       }
-
-      // 数据库未连接，或没有加载到真实题目：走原来的静态demo效果，不写数据库
-      if (!supabaseClient || !currentQuestion) {
-        return submitWorkspaceQuizFallback();
+      if (!currentQuestion) {
+        alert("还没有可提交的题目。");
+        return;
       }
 
-      const chosenLetter = ["A", "B", "C", "D", "E"][state.selectedAnswer];
-      const correct = chosenLetter === currentQuestion.answer;
+      const type = currentQuestion.type || "multiple_choice";
+      let correct = false;
+      let userAnswerText = "";
+
+      // 按题型收集答案并判定正误
+      if (type === "multiple_choice") {
+        if (state.selectedAnswer === null || state.selectedAnswer === undefined) {
+          alert("Choose an answer first so Sherpa can analyze it.");
+          return;
+        }
+        const chosenLetter = ["A", "B", "C", "D", "E"][state.selectedAnswer];
+        correct = chosenLetter === currentQuestion.answer;
+        userAnswerText = chosenLetter;
+      } else if (type === "fill_blank") {
+        const inputs = Array.from(document.querySelectorAll('#workspaceOptionsContainer .blank-input'));
+        const vals = inputs.map(i => i.value.trim());
+        if (vals.some(v => !v)) { alert("请先填完所有空格。"); return; }
+        userAnswerText = vals.join(" / ");
+        const ans = Array.isArray(currentQuestion.answers) ? currentQuestion.answers.map(normAnswer) : [];
+        correct = ans.length === vals.length && ans.every((a, i) => a === normAnswer(vals[i]));
+      } else if (type === "short_answer") {
+        const ta = document.getElementById("workspaceShortAnswer");
+        const val = ta ? ta.value.trim() : "";
+        if (!val) { alert("请先写一点你的回答。"); return; }
+        userAnswerText = val;
+        try {
+          const g = await gradeShortAnswer(currentQuestion, val);
+          correct = !!g.correct;
+          if (g.feedback) currentQuestion.explanation = g.feedback;
+        } catch (e) {
+          console.error("简答题评分失败:", e);
+          alert("评分失败，请稍后重试。");
+          return;
+        }
+      }
+
+      // 数据库未连接：走静态兜底（不写库）
+      if (!supabaseClient) {
+        return submitWorkspaceQuizFallback(type, correct, userAnswerText);
+      }
 
       // Coach-generated questions have no DB id yet — persist first so they get a
       // real id + concept_id and can be tracked correctly in the mistake book.
       const qId = await ensureQuestionPersisted(currentQuestion);
       if (!qId) {
-        // Could not persist (e.g. DB issue) — still give feedback without writing.
         renderQuizFeedback(correct, { mastery: 0 });
         const aiSummary = correct
           ? `Nice work on ${currentQuestion.conceptName}.`
           : `Not quite — I've noted this gap in ${currentQuestion.conceptName}.`;
-        state.chatHistory.push({ sender: "user", text: `Submitted answer: ${state.selectedAnswer}` });
+        state.chatHistory.push({ sender: "user", text: `Submitted: ${userAnswerText}` });
         state.chatHistory.push({ sender: "ai", text: aiSummary });
         renderWorkspaceCoach();
         showToastNotification(correct ? "Correct" : "Saved");
@@ -2478,7 +2550,7 @@
           .insert({
             question_id: qId,
             user_id: CURRENT_USER_ID,
-            user_answer: state.selectedAnswer,
+            user_answer: userAnswerText,
             is_correct: correct,
             score: correct ? 100 : 0
           })
@@ -2510,14 +2582,13 @@
         await updateStreak();   // 完成一次真实答题即算活跃，更新连续学习天数
         await fetchStats();     // 同步刷新顶部 Learning Progress 卡片
 
-        const summaryText = `Submitted answer: ${state.selectedAnswer}`;
         const aiSummary = correct
           ? `Nice work. Mastery for ${currentQuestion.conceptName} is now ${progress.mastery}%.`
           : `Not quite — I've logged this as a gap in ${currentQuestion.conceptName} and added it to your mistake book.`;
-        state.chatHistory.push({ sender: "user", text: summaryText });
+        state.chatHistory.push({ sender: "user", text: `Submitted: ${userAnswerText}` });
         state.chatHistory.push({ sender: "ai", text: aiSummary });
         renderWorkspaceCoach();
-        saveChatMessage("user", summaryText);
+        saveChatMessage("user", `Submitted: ${userAnswerText}`);
         saveChatMessage("assistant", aiSummary);
 
         showToastNotification(correct ? "Progress updated" : "Added to mistake book");
@@ -2525,6 +2596,23 @@
         console.error("提交答案失败:", err);
         alert("提交失败，请稍后重试（详见浏览器控制台console）。");
       }
+    }
+
+    // 简答题 / 填空题（无标准字母答案）交给 AI 评分
+    async function gradeShortAnswer(question, userAnswer) {
+      const response = await fetch(AI_GRADE_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          questionTitle: question.title,
+          sampleAnswer: question.answer || question.sample_answer || "",
+          userAnswer,
+          knowledgePoint: question.conceptName || ""
+        })
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      return { correct: !!data.correct, feedback: data.feedback || "" };
     }
 
     // Coach guidance submission — conversational, no right/wrong, no DB writes.
@@ -2579,6 +2667,7 @@
       // 用已保存的真实 topic（不要从 goal 字符串重新推断，否则会解析出错主题）
       const inferred = { topic: state.learningTopic || "Core concepts", focus: "core concepts" };
       const previousQuestion = currentQuestion ? currentQuestion.title : "";
+      const requestedType = nextQuizType(); // 在 选择题/填空题/简答题 间轮转
 
       try {
         const response = await fetch(AI_Q_ENDPOINT, {
@@ -2589,26 +2678,40 @@
             topic: inferred.topic,
             focus: inferred.focus,
             difficulty: "Medium",
-            previousQuestion
+            previousQuestion,
+            type: requestedType
           })
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
         const q = data.question;
-        if (!q || !q.title || !Array.isArray(q.options) || q.options.length < 2 || !q.answer) {
-          throw new Error("模型返回的题目格式不正确");
+        if (!q || !q.type || !q.title) throw new Error("模型返回的题目格式不正确");
+
+        // 按题型做必要字段校验
+        const type = q.type;
+        if (type === "multiple_choice") {
+          if (!Array.isArray(q.options) || q.options.length < 2 || !q.answer) throw new Error("选择题字段不完整");
+        } else if (type === "fill_blank") {
+          if (!Array.isArray(q.answers) || q.answers.length < 1 || !q.title.includes("___")) throw new Error("填空题字段不完整");
+        } else if (type === "short_answer") {
+          if (!q.sample_answer) throw new Error("简答题字段不完整");
+        } else {
+          throw new Error("未知题型");
         }
+
         currentQuestion = {
           title: q.title,
-          options: q.options,
-          answer: q.answer,                 // "A" | "B" | "C" | "D"
+          type,                                           // multiple_choice | fill_blank | short_answer
+          options: Array.isArray(q.options) ? q.options : [],
+          answer: q.answer || q.sample_answer || "",   // 选择题为字母；填空题/简答题留空，分别用 answers / 评分判定
+          answers: Array.isArray(q.answers) ? q.answers : [],
           explanation: q.explanation || "",
           difficulty: q.difficulty || "Medium",
           conceptName: q.knowledge_point || inferred.topic,
           topic: inferred.topic,
           concept_id: null,
           generatedByCoach: true,
-          questionType: "quiz"              // 有标准答案，走评分流程、可进错题本
+          questionType: "quiz"              // 有标准答案/可评分，走评分流程、可进错题本
         };
         renderCurrentQuestion();
       } catch (err) {
@@ -2622,60 +2725,51 @@
       }
     }
 
-    // 数据库未配置时的静态demo效果，保持和原来一样，方便没连库也能预览界面
-    function submitWorkspaceQuizFallback() {
-      // ── Coach guidance fallback: conversational, no scoring ──
-      if (currentQuestion && currentQuestion.questionType === "coach_guidance") {
-        const options = Array.isArray(currentQuestion.options)
-          ? currentQuestion.options
-          : JSON.parse(currentQuestion.options || "[]");
-        const choiceText = options[state.selectedAnswer] || `Option ${state.selectedAnswer}`;
-        const topic = currentQuestion.conceptName || "this topic";
-
-        const responses = {
-          "Review core concepts": `Great idea! Let's review the fundamentals of ${topic} together. Here's a quick summary of the key concepts... We'll start with a warm-up question next.`,
-          "Try a worked example": `Perfect — worked examples are one of the most effective ways to learn! Let me walk you through a detailed example on ${topic}.`,
-          "Test yourself with a mini challenge": `Love the proactive approach! Let me set up a mini challenge on ${topic} for you.`,
-          "Ask for a deeper explanation": `Of course! Let me break down ${topic} in more detail so you build a solid foundation.`
-        };
-        const aiReply = responses[choiceText] || `Thanks! Let me tailor the ${topic} content to match your learning style.`;
-
-        state.chatHistory.push({ sender: "user", text: `I'd like to: ${choiceText}` });
-        state.chatHistory.push({ sender: "ai", text: aiReply });
-        renderWorkspaceCoach();
-        showToastNotification("Learning path updated based on your choice");
-
-        // Clear the used guidance question
-        state.practiceQuestion = null;
-        currentQuestion = null;
-        setTimeout(() => {
-          renderCurrentQuestion();  // will show placeholder until a new question is available
-        }, 500);
-        return;
-      }
-
-      const chosenLetter = ["A", "B", "C", "D", "E"][state.selectedAnswer];
-      const correct = chosenLetter === currentQuestion.answer;
+    // 数据库未配置时的静态demo效果（不写库），按题型给出反馈
+    function submitWorkspaceQuizFallback(type, correct, userAnswerText) {
+      const topic = (currentQuestion && currentQuestion.conceptName) || "this topic";
       const resultCard = document.getElementById("workspaceResultCard");
       resultCard.classList.toggle("incorrect", !correct);
 
-      document.getElementById("workspaceResultBadge").textContent = correct ? "Correct" : "Needs review";
-      document.getElementById("workspaceResultTitle").textContent = correct ? "Nice — that's overfitting." : "Close — this is overfitting.";
-      document.getElementById("workspaceResultText").textContent = correct
-        ? "You recognized that strong training performance can hide poor real-world generalization."
-        : "Your answer suggests the training/testing split still needs reinforcement.";
-      document.getElementById("workspaceUnderstoodText").textContent = correct
-        ? "You understand model accuracy and the difference between training and testing performance."
-        : "You understand that model performance can fail, but the failure type needs sharper labeling.";
-      document.getElementById("workspaceGapText").textContent = "You need stronger understanding of generalization: models should perform well on new examples, not just memorized training data.";
-      document.getElementById("workspaceNextText").textContent = "Practice overfitting examples, then retry a slightly harder scenario question.";
+      if (type === "fill_blank") {
+        document.getElementById("workspaceResultBadge").textContent = correct ? "Correct" : "Needs review";
+        document.getElementById("workspaceResultTitle").textContent = correct ? "Nicely done — blanks filled correctly." : "Close — check the blanks.";
+        document.getElementById("workspaceResultText").textContent = currentQuestion.explanation || "";
+        document.getElementById("workspaceUnderstoodText").textContent = correct ? `You correctly completed the ${topic} sentence.` : `The ${topic} blanks still need work.`;
+        document.getElementById("workspaceGapText").textContent = currentQuestion.explanation || "Review this concept before trying again.";
+        document.getElementById("workspaceNextText").textContent = "Keep practicing to build confidence.";
+      } else if (type === "short_answer") {
+        document.getElementById("workspaceResultBadge").textContent = correct ? "Correct" : "Needs review";
+        document.getElementById("workspaceResultTitle").textContent = correct ? "Great answer!" : "Good try — here's a note.";
+        document.getElementById("workspaceResultText").textContent = currentQuestion.explanation || "";
+        document.getElementById("workspaceUnderstoodText").textContent = correct ? `Your answer captures ${topic} well.` : `Your answer on ${topic} needs a bit more.`;
+        document.getElementById("workspaceGapText").textContent = currentQuestion.explanation || "Review this concept before trying again.";
+        document.getElementById("workspaceNextText").textContent = "Keep practicing to build confidence.";
+      } else if (Array.isArray(currentQuestion && currentQuestion.options) && currentQuestion.answer) {
+        // 用题目自带数据做选择题静态演示
+        document.getElementById("workspaceResultBadge").textContent = correct ? "Correct" : "Needs review";
+        document.getElementById("workspaceResultTitle").textContent = correct ? "Nice — that's right." : "Not quite — here's what happened.";
+        document.getElementById("workspaceResultText").textContent = currentQuestion.explanation || "";
+        document.getElementById("workspaceUnderstoodText").textContent = correct ? `You correctly applied ${topic}.` : `You're engaging with ${topic}, but the core distinction still needs work.`;
+        document.getElementById("workspaceGapText").textContent = currentQuestion.explanation || "Review this concept before trying again.";
+        document.getElementById("workspaceNextText").textContent = `Mastery for ${topic}: practice more to improve.`;
+      } else {
+        // 旧版 overfitting 静态兜底
+        document.getElementById("workspaceResultBadge").textContent = correct ? "Correct" : "Needs review";
+        document.getElementById("workspaceResultTitle").textContent = correct ? "Nice — that's overfitting." : "Close — this is overfitting.";
+        document.getElementById("workspaceResultText").textContent = correct ? "You recognized that strong training performance can hide poor real-world generalization." : "Your answer suggests the training/testing split still needs reinforcement.";
+        document.getElementById("workspaceUnderstoodText").textContent = correct ? "You understand model accuracy and the difference between training and testing performance." : "You understand that model performance can fail, but the failure type needs sharper labeling.";
+        document.getElementById("workspaceGapText").textContent = "You need stronger understanding of generalization: models should perform well on new examples, not just memorized training data.";
+        document.getElementById("workspaceNextText").textContent = "Practice overfitting examples, then retry a slightly harder scenario question.";
+      }
 
       document.getElementById("workspaceFeedbackCollapse").classList.add("expanded");
 
-      state.chatHistory.push({ sender: "user", text: `Submitted challenge response option: ${state.selectedAnswer}` });
-      state.chatHistory.push({ sender: "ai", text: `Challenge complete. Performance data recorded. View explanation module and path adjustments inside your right terminal.` });
-      renderWorkspaceCoach();
-
+      if (userAnswerText) {
+        state.chatHistory.push({ sender: "user", text: `Submitted: ${userAnswerText}` });
+        state.chatHistory.push({ sender: "ai", text: `Challenge complete. Performance data recorded. View explanation in your right terminal.` });
+        renderWorkspaceCoach();
+      }
       showToastNotification("Learning Map Updated");
     }
 

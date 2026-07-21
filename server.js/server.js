@@ -18,7 +18,7 @@ app.get('/', (_req, res) => {
   res.json({
     status: 'ok',
     message: 'Sherpa AI backend is running.',
-    endpoints: ['/health', '/api/chat', '/api/ai-feedback', '/api/generate-question', '/api/extract-goal']
+    endpoints: ['/health', '/api/chat', '/api/ai-feedback', '/api/generate-question', '/api/extract-goal', '/api/grade-answer']
   });
 });
 
@@ -179,6 +179,13 @@ If the learner has NOT yet named a concrete subject or skill they want to learn,
 - Once they name a subject, anchor every example, question, and the learning goal to THAT subject.
 - Keep asking (gently, once) until you have a concrete subject — a vague reply like "help me get started" is not a subject.
 
+### **QUIZZES BELONG ON THE RIGHT PANEL — DO NOT RUN THEM IN CHAT**
+This app has a dedicated "AI Generated Quiz" panel on the RIGHT side. Your job in the chat is to TEACH and DISCUSS — not to quiz the learner here.
+- After you explain a concept, do NOT ask the learner to answer questions, fill in blanks, or write example sentences INSIDE the chat.
+- Instead, end your turn with a short pointer such as: "Now check your understanding — answer the quiz on the right →" (or in Chinese: "试试右侧的测验 →").
+- The quiz on the right is generated automatically from what you've taught; you do NOT need to write the questions yourself.
+- If the learner shares an answer in chat, gently redirect: "Nice try! Submit it in the quiz panel on the right so I can score it and track your progress." (Chinese: "不错！请把它提交到右侧的测验面板，我来评分并记录进度。")
+
 ---
 
 ### **CRITICAL: LANGUAGE CONSISTENCY**
@@ -255,34 +262,42 @@ Rules:
   }
 });
 
-// 接口 3：AI 根据学习目标动态生成练习题（结构化 JSON）
+// 接口 3：AI 根据学习目标动态生成练习题（支持多种题型）
 app.post('/api/generate-question', async (req, res) => {
-  const { goal, topic, focus, difficulty, previousQuestion } = req.body;
+  const { goal, topic, focus, difficulty, previousQuestion, type } = req.body;
 
   if (!process.env.OPENAI_API_KEY) {
     return res.status(500).json({ error: "服务端尚未配置 OPENAI_API_KEY。" });
   }
 
+  // 题型：auto 让模型自选，否则按前端指定
+  const requestedType = ["multiple_choice", "fill_blank", "short_answer", "auto"].includes(type) ? type : "auto";
+
   const sysPrompt = `You are an expert question designer for a personalized learning platform.
-Generate ONE high-quality multiple-choice practice question tailored to the learner's goal.
-Return ONLY a single valid JSON object (no markdown fences, no commentary) with exactly this shape:
-{
-  "title": "the question text",
-  "options": ["option A text", "option B text", "option C text", "option D text"],
-  "answer": "A",
-  "explanation": "why the correct answer is right",
-  "difficulty": "Easy|Medium|Hard",
-  "knowledge_point": "the specific concept this question tests"
-}
+Generate ONE high-quality practice question tailored to the learner's goal and topic.
+The question format is determined by the "type" field:
+- "multiple_choice": exactly 4 options, exactly one correct answer (letter A/B/C/D).
+- "fill_blank": a sentence or short paragraph with 1-3 blanks written as ___ (three underscores). Provide the correct word/phrase for each blank, in order.
+- "short_answer": an open-ended question best answered in 1-3 sentences. Provide an ideal sample answer.
+
+Return ONLY a single valid JSON object (no markdown fences, no commentary):
+multiple_choice:
+{"type":"multiple_choice","title":"question text","options":["A text","B text","C text","D text"],"answer":"A","explanation":"why correct","difficulty":"Easy|Medium|Hard","knowledge_point":"concept tested"}
+fill_blank:
+{"type":"fill_blank","title":"sentence with ___ blanks","answers":["word1","word2"],"explanation":"why","difficulty":"Easy|Medium|Hard","knowledge_point":"concept tested"}
+short_answer:
+{"type":"short_answer","title":"open question","sample_answer":"ideal answer","explanation":"why","difficulty":"Easy|Medium|Hard","knowledge_point":"concept tested"}
 Rules:
-- Exactly 4 options, exactly one correct, answer is "A","B","C" or "D".
-- Do NOT repeat the previous question if one is provided.
-- Match the learner's language.`;
+- If previousQuestion is provided, do NOT repeat it.
+- Match the learner's language.
+- Stay strictly on the stated topic/focus.
+- type must be one of: multiple_choice, fill_blank, short_answer.`;
 
   const userPrompt = `Learning goal: ${goal || "general learning"}
 Topic to practice: ${topic || "the goal topic"}
 Focus: ${focus || "core concepts"}
 Difficulty: ${difficulty || "Medium"}
+Question type: ${requestedType}
 ${previousQuestion ? `Do NOT repeat this question: "${previousQuestion}"` : ""}
 Now output the JSON question.`;
 
@@ -309,14 +324,73 @@ Now output the JSON question.`;
     }
     const question = JSON.parse(raw);
 
-    if (!question.title || !Array.isArray(question.options) || question.options.length < 2 || !question.answer) {
-      throw new Error("Malformed question from model");
+    // 校验：根据题目实际 type 校验必备字段
+    const t = question.type;
+    if (t === "multiple_choice") {
+      if (!question.title || !Array.isArray(question.options) || question.options.length < 2 || !question.answer || !question.explanation) {
+        throw new Error("Malformed multiple_choice question");
+      }
+    } else if (t === "fill_blank") {
+      if (!question.title || !question.title.includes("___") || !Array.isArray(question.answers) || question.answers.length < 1 || !question.explanation) {
+        throw new Error("Malformed fill_blank question");
+      }
+    } else if (t === "short_answer") {
+      if (!question.title || !question.sample_answer || !question.explanation) {
+        throw new Error("Malformed short_answer question");
+      }
+    } else {
+      throw new Error("Unknown question type from model");
     }
 
     res.json({ question });
   } catch (error) {
     console.error("Generate question error:", error.message);
     res.status(500).json({ error: "AI 生成题目失败，请重试。" });
+  }
+});
+
+// 接口 4：对简答题 / 填空题做 AI 评分（独立于数据库，无库也能用）
+app.post('/api/grade-answer', async (req, res) => {
+  const { questionTitle, sampleAnswer, userAnswer, knowledgePoint } = req.body;
+
+  if (!process.env.OPENAI_API_KEY) {
+    return res.status(500).json({ error: "服务端尚未配置 OPENAI_API_KEY。" });
+  }
+
+  const prompt = `Grade the student's short answer.
+Question: "${questionTitle}"
+Ideal / sample answer: "${sampleAnswer}"
+Student's answer: "${userAnswer || ""}"
+Knowledge point: "${knowledgePoint || ""}"
+
+Decide if the student's answer is essentially correct (captures the key idea). Be lenient: minor wording differences are fine, but a missing or wrong key concept means incorrect.
+Respond with ONLY a valid JSON object (no markdown):
+{"correct": true|false, "feedback": "one friendly sentence explaining why it's right or what's missing"}`;
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model: process.env.OPENAI_MODEL || "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
+      messages: [
+        {
+          role: "system",
+          content: `You are a fair grader. CRITICAL INSTRUCTION: YOU MUST RESPOND IN THE EXACT SAME LANGUAGE USED IN THE QUESTION. If the question is English, respond ONLY in English; if Chinese, respond ONLY in Chinese.`
+        },
+        { role: "user", content: prompt }
+      ],
+      temperature: 0.3,
+      max_tokens: 200
+    });
+
+    let raw = completion.choices[0].message.content || "{}";
+    raw = raw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+    raw = raw.replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
+    const s = raw.indexOf("{"); const e = raw.lastIndexOf("}");
+    if (s !== -1 && e !== -1 && e > s) raw = raw.slice(s, e + 1);
+    const parsed = JSON.parse(raw);
+    res.json({ correct: !!parsed.correct, feedback: String(parsed.feedback || "") });
+  } catch (error) {
+    console.error("Grade answer error:", error.message);
+    res.status(500).json({ error: "评分失败。" });
   }
 });
 
