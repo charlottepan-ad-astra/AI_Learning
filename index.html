@@ -1749,8 +1749,9 @@
       if (t === "machine learning" || t === "ml" || /\bml\b/.test(g) || g.includes("machine learning") || g.includes("deep learning") || g.includes("neural")) return ["ml_fundamentals", "neural_networks"];
       if (t === "sql" || g.includes("sql") || g.includes("database")) return ["sql_basics"];
       if (t === "javascript" || g.includes("frontend") || g.includes("javascript") || g.includes("js ")) return ["javascript_basics"];
-      // 兜底：给一个通用入门概念
-      return ["ml_fundamentals"];
+      // 兜底：未知主题不再硬塞进 Machine Learning，返回空数组，
+      // 由 ensureQuestionPersisted 为其新建专属概念，保证错题本按真实主题归类。
+      return [];
     }
 
     async function attachConceptsForTopic(planId, topic, goalText) {
@@ -2517,6 +2518,19 @@
           }
         }
 
+        // 未知主题（如 French / English）不再塞进默认的 Machine Learning，
+        // 而是为它在 concepts 里新建一个专属概念，保证测验与错题本按真实主题归类。
+        if (!conceptId && topic) {
+          const slug = "topic_" + topic.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40);
+          try {
+            const { data: created } = await supabaseClient
+              .from("concepts")
+              .insert({ name: topic, domain: topic, concept_key: slug })
+              .select("id").single();
+            if (created) conceptId = created.id;
+          } catch (e) { console.error("新建概念失败:", e); }
+        }
+
         const options = Array.isArray(q.options) ? q.options : JSON.parse(q.options || "[]");
         const { data: inserted, error } = await supabaseClient
           .from("questions")
@@ -2657,6 +2671,15 @@
         saveChatMessage("assistant", aiSummary);
 
         showToastNotification(correct ? "Progress updated" : "Added to mistake book");
+
+        // 提交后立即进入下一题，避免一直停在“同一道题”上
+        // （按当前目标动态生成、题型轮转，并用上一题标题去重）
+        try {
+          document.getElementById("workspaceFeedbackCollapse").classList.remove("expanded");
+          await generateQuestionFromAI();
+        } catch (e) {
+          console.error("加载下一题失败:", e);
+        }
       } catch (err) {
         console.error("提交答案失败:", err);
         alert("提交失败，请稍后重试（详见浏览器控制台console）。");
@@ -2867,9 +2890,8 @@
         return;
       }
 
-      await loadNextQuestion();
-      await fetchLearningMap();
-      renderLearningMap();
+      // 直接生成一道全新的、按当前目标定制且题型轮转的题目（避免一直停在旧题 / 错主题）
+      await generateQuestionFromAI();
       showToastNotification("Loaded next question");
     }
 
