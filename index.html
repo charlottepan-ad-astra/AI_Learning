@@ -484,6 +484,18 @@
     .learning .node-icon { background: #eef2ff; }
     .locked { opacity: 0.66; }
 
+    /* 可交互的学习地图节点 */
+    .node { cursor: default; transition: box-shadow .15s ease, transform .15s ease, border-color .15s ease; }
+    .node:not(.locked):hover { box-shadow: 0 10px 26px rgba(15,23,42,.10); transform: translateY(-1px); border-color: #c7d2fe; }
+    .node-body { min-width: 0; }
+    .node-desc { color: var(--muted); margin: 4px 0 10px; font-size: .9rem; line-height: 1.4; }
+    .node-progress { height: 6px; background: #eef2f7; border-radius: 99px; overflow: hidden; }
+    .node-progress span { display: block; height: 100%; background: linear-gradient(90deg,#6366f1,#0ea5e9); border-radius: 99px; transition: width .45s ease; }
+    .node-side { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
+    .practice-btn { border: 1px solid #c7d2fe; background: #eef2ff; color: #4338ca; font-weight: 600; padding: 8px 14px; border-radius: 12px; cursor: pointer; font-size: .85rem; white-space: nowrap; transition: background .15s ease; }
+    .practice-btn:hover:not([disabled]) { background: #e0e7ff; }
+    .practice-btn[disabled] { opacity: .65; cursor: not-allowed; background: #f1f5f9; color: #94a3b8; border-color: #e2e8f0; }
+
     .recommendation {
       padding: 24px;
       color: white;
@@ -704,6 +716,40 @@
     .toast-notification.show {
       transform: translateY(0);
       opacity: 1;
+    }
+
+    /* 刷新/重开时“是否继续上次会话”的弹窗 */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.55);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      padding: 20px;
+    }
+    .modal-card {
+      background: #fff;
+      border-radius: 18px;
+      max-width: 440px;
+      width: 100%;
+      padding: 28px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      animation: modalPop 0.25s ease;
+    }
+    @keyframes modalPop {
+      from { transform: translateY(12px) scale(0.98); opacity: 0; }
+      to   { transform: translateY(0) scale(1); opacity: 1; }
+    }
+    .modal-actions {
+      display: flex;
+      gap: 12px;
+      justify-content: flex-end;
+    }
+    .modal-actions button {
+      padding: 10px 18px;
+      font-size: 0.95rem;
     }
 
     .coach.agent-light-theme {
@@ -1022,7 +1068,7 @@
             <div class="card path">
               <div class="category-title">
                 <h3>Personalized Learning Map</h3>
-                <span class="badge blue">Machine Learning track</span>
+                <span id="learningTrackBadge" class="badge blue">No track yet</span>
               </div>
               <div id="learningMap"></div>
             </div>
@@ -1071,6 +1117,21 @@
   </div>
 
   <div class="toast-notification" id="workspaceToast">Learning Map Updated</div>
+
+  <!-- 刷新/重开时询问是否继续上次的本地会话 -->
+  <div id="restoreModal" class="modal-overlay" style="display:none;">
+    <div class="modal-card">
+      <h2 style="margin:0 0 10px; font-size:1.25rem;">Continue your last session?</h2>
+      <p style="color:#475569; margin:0 0 22px; line-height:1.55;">
+        We found a previous conversation on this device. Would you like to pick up where you left off,
+        or start a fresh chat?
+      </p>
+      <div class="modal-actions">
+        <button id="restoreNo" class="ghost">Start fresh</button>
+        <button id="restoreYes" class="primary">Continue</button>
+      </div>
+    </div>
+  </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script>
@@ -1152,6 +1213,8 @@
     // 下面四个改成 let，作为mock数据的初始值/兜底值；
     // 如果数据库连接成功，会在 loadAllFromDatabase() 里被真实数据覆盖
     let currentQuestion = null; // 当前正在作答的真实题目（从数据库读取）
+
+    let mockCompletion = 0; // demo 模式下本地"完成度"，每答对 +8
 
     let learningNodes = []; // 初始为空，表示还未生成学习地图
     let hasLearningGoal = false; // 标记用户是否已确定学习目标
@@ -1320,9 +1383,10 @@
 
     async function fetchLearningMap() {
       if (!supabaseClient || !CURRENT_PLAN_ID) {
-        // 没有 plan 时显式清空 + 把"已确定目标"标记重置，避免渲染旧地图
-        learningNodes = [];
-        hasLearningGoal = false;
+        // 没有数据库计划时：若教练已经本地设定了目标（learningNodes 非空），
+        // 保留本地地图，不要清空——否则仪表盘会回退成空的 "Machine Learning track" 占位。
+        // 全新用户由 resetUserState() 负责清空，这里不重复清。
+        if (learningNodes.length === 0) hasLearningGoal = false;
         return;
       }
 
@@ -1560,6 +1624,7 @@
       }
 
       document.getElementById("workspaceFeedbackCollapse").classList.remove("expanded");
+      saveSession();
     }
 
     function escapeHtml(s) {
@@ -1577,31 +1642,56 @@
       return cjk > latin ? "Chinese" : "English";
     }
 
-    // 当 AI 提取学习目标失败时，本地扫描整段对话：用户是否明确说过“想学/练习 X”。
-    // 只要点明过具体学科（如 "I would like to learn English"），就据此锁定目标，
-    // 保证右侧能出现真正的测验题，而不是一直卡在垃圾引导题。
+    // 当 AI 提取学习目标失败时，本地扫描整段对话：用户是否明确说过想学的具体学科。
+    // 覆盖多种表述：
+    //   - 结构化："Subject: Italian, Style: A for hands-on" → Italian
+    //   - 动词触发："I want to learn Italian" / "learn Spanish" → 对应学科
+    //   - 直接命中：只说了 "Italian" / "英语" 这类语言/学科名
+    // 只要点明过具体学科，就据此锁定目标，保证右侧能出现真正的测验题，而不是卡在引导题。
     function localExtractSubject() {
-      const enPatterns = [
-        /(?:learn|study|learning|studying|practice|practicing|get started with|master|improve|understand|know)\s+([A-Za-z][A-Za-z\s\-]{1,30}?)(?:\s*[.!?。！？]|$)/i,
-        /(?:learn|study|learning)\s+([A-Za-z][A-Za-z\s\-]{1,30})/i
-      ];
-      const zhPatterns = [
-        /(?:学习|学|练习|练|掌握|了解|想学|想练习)\s*([一-鿿]{1,10})/,
-        /(?:learn|study)\s*([一-鿿]{1,10})/i
-      ];
-      for (const m of state.chatHistory) {
-        if (m.sender !== "user") continue;
-        const text = m.text || "";
+      const userMsgs = state.chatHistory.filter(m => m.sender === "user").map(m => m.text || "");
+      if (!userMsgs.length) return null;
+
+      // 常见语言 / 学科名（用户只说了学科本身，没有 “learn/study” 之类的动词）
+      const knownRe = /\b(english|spanish|french|italian|german|chinese|japanese|korean|portuguese|russian|arabic|english grammar|python|javascript|java|sql|statistics|machine learning|c\+\+|guitar|piano|photography|chess|accounting|economics|biology|chemistry|physics|history|math(?:ematics)?)\b/i;
+
+      const tryText = (text) => {
+        if (!text) return null;
         let subj = null;
-        for (const p of enPatterns) { const mm = text.match(p); if (mm) { subj = mm[1].trim(); break; } }
-        if (!subj) for (const p of zhPatterns) { const mm = text.match(p); if (mm) { subj = mm[1].trim(); break; } }
-        if (subj) {
-          subj = subj.replace(/\b(a|an|the|some|my|to|for|about|on|in|with|first|today|now|new|skill|skills|基础|入门)\b/gi, "").trim();
-          subj = subj.split(/\s+/).slice(0, 4).join(" ");
-          if (subj && subj.length <= 30) return subj;
+
+        // 1) 结构化：Subject: X / 学科：X
+        const struct = text.match(/subject\s*[:：]\s*([A-Za-z一-鿿][A-Za-z一-鿿\s\-']{1,30})/i)
+          || text.match(/学科\s*[:：]\s*([一-鿿\w][一-鿿\w\s\-']{1,15})/)
+          // 2) 动词触发：learn / study / practice / want to learn ... X
+          || text.match(/(?:want to learn|would like to learn|get started with|learn|study|learning|studying|practice|practicing|master|improve|understand|know)\s+([A-Za-z一-鿿][A-Za-z一-鿿\s\-']{1,30}?)(?:\s*[.!?。！？]|$)/i)
+          || text.match(/(?:learn|study|learning)\s+([A-Za-z一-鿿][A-Za-z一-鿿\s\-']{1,30})/i);
+        if (struct) subj = struct[1].trim();
+
+        // 3) 兜底：直接命中常见语言 / 学科名
+        if (!subj) {
+          const known = text.match(knownRe);
+          if (known) subj = known[1].trim();
         }
-      }
-      return null;
+        if (!subj) return null;
+
+        // 去掉风格 / 限定词（hands-on、A、basics、基础、入门 …）和多余标点
+        subj = subj
+          .replace(/,.*$/i, "")
+          .replace(/\b(a|an|the|some|my|to|for|about|on|in|with|first|today|now|new|skill|skills|basics?|基础|入门|style|hands-?on)\b/gi, "")
+          .replace(/[:,，：]/g, "")
+          .trim();
+        subj = subj.split(/\s+/).slice(0, 4).join(" ");
+
+        if (subj && subj.length <= 30 &&
+            !/^(new skill|skills|a new skill|practice|practicing|questions?|question|help|get started|started|confidence|learn|learning|study|something|anything)$/i.test(subj)) {
+          return subj;
+        }
+        return null;
+      };
+
+      // 先看最新一条用户消息（最贴近当前意图），再看整段用户对话
+      const latest = userMsgs[userMsgs.length - 1];
+      return tryText(latest) || tryText(userMsgs.join(" "));
     }
 
     async function saveChatMessage(role, content) {
@@ -1614,6 +1704,92 @@
         content
       });
       if (error) console.error("保存对话记录失败:", error);
+    }
+
+    /* ============================================================
+       本地会话持久化（localStorage，仅 demo 模式 / 未登录时使用）
+       目的：刷新页面后保留聊天记录与学习目标，并在下次打开时询问用户
+             是否“继续上次的对话”还是“重新开始”。
+       已登录用户的数据走 Supabase，不会写入这里的 localStorage（saveSession 内置拦截）。
+    ============================================================ */
+    const SESSION_KEY = "aiLearningSession_v1";
+
+    function saveSession() {
+      if (supabaseClient) return; // 已登录：会话由 Supabase 负责，不重复落本地
+      try {
+        const snapshot = {
+          version: 1,
+          chatHistory: state.chatHistory,
+          suggestedReplies: state.suggestedReplies,
+          learningGoal: state.learningGoal,
+          learningTopic: state.learningTopic,
+          coachStatus: state.coachStatus,
+          hasLearningGoal: hasLearningGoal,
+          learningNodes: learningNodes,
+          currentQuestion: currentQuestion,
+          mockCompletion: mockCompletion,
+          activePage: state.activePage
+        };
+        localStorage.setItem(SESSION_KEY, JSON.stringify(snapshot));
+      } catch (e) { /* 隐私模式 / 配额已满：忽略即可，不影响使用 */ }
+    }
+
+    function loadSessionSnapshot() {
+      try {
+        const raw = localStorage.getItem(SESSION_KEY);
+        if (!raw) return null;
+        const s = JSON.parse(raw);
+        if (!s || !Array.isArray(s.chatHistory)) return null;
+        return s;
+      } catch (e) { return null; }
+    }
+
+    function clearSession() {
+      try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
+    }
+
+    // 把上次保存的快照还原回内存态（仅 demo 模式调用）
+    function restoreSession() {
+      const s = loadSessionSnapshot();
+      if (!s) return;
+      if (Array.isArray(s.chatHistory)) state.chatHistory = s.chatHistory;
+      if (Array.isArray(s.suggestedReplies)) state.suggestedReplies = s.suggestedReplies;
+      if (typeof s.learningGoal === "string") state.learningGoal = s.learningGoal;
+      if (typeof s.learningTopic === "string") state.learningTopic = s.learningTopic;
+      if (typeof s.coachStatus === "string") state.coachStatus = s.coachStatus;
+      if (typeof s.hasLearningGoal === "boolean") hasLearningGoal = s.hasLearningGoal;
+      if (Array.isArray(s.learningNodes)) learningNodes = s.learningNodes;
+      if (s.currentQuestion !== undefined) currentQuestion = s.currentQuestion;
+      if (typeof s.mockCompletion === "number") mockCompletion = s.mockCompletion;
+      if (typeof s.activePage === "string") state.activePage = s.activePage;
+    }
+
+    // 刷新后询问用户是否“继续上次的本地会话”。返回 Promise：
+    //   true  = 继续上次；false = 重新开始；null = 无可用历史，直接进入
+    function askRestoreSession() {
+      return new Promise((resolve) => {
+        const snap = loadSessionSnapshot();
+        const meaningful = snap
+          && (snap.chatHistory.length > 1 || (snap.learningGoal && snap.learningGoal !== "Not set yet"));
+        if (!meaningful) { resolve(null); return; }
+
+        const modal = document.getElementById("restoreModal");
+        const yesBtn = document.getElementById("restoreYes");
+        const noBtn = document.getElementById("restoreNo");
+        if (!modal || !yesBtn || !noBtn) { resolve(null); return; }
+
+        modal.style.display = "flex";
+        const finish = (choice) => {
+          yesBtn.removeEventListener("click", onYes);
+          noBtn.removeEventListener("click", onNo);
+          modal.style.display = "none";
+          resolve(choice);
+        };
+        const onYes = () => finish(true);
+        const onNo = () => finish(false);
+        yesBtn.addEventListener("click", onYes);
+        noBtn.addEventListener("click", onNo);
+      });
     }
 
     async function loadAllFromDatabase() {
@@ -1634,6 +1810,9 @@
       } catch (err) {
         console.error("从数据库加载数据时出现异常，继续使用示例数据兜底:", err);
       }
+      // 无论是否连上数据库，都按当前（本地/数据库）状态刷新仪表盘地图与建议
+      renderLearningMap();
+      renderAIRecommendation();
     }
 
     /* ============================================================
@@ -1808,6 +1987,7 @@
         // 从 DB 重新拉一遍，让 learning map / quiz 的渲染与持久化保持一致
         await fetchLearningMap();
         renderLearningMap();
+        renderAIRecommendation();
         await loadNextQuestion(); // 会被 practiceQuestion 早返回，不影响当前显示
       } catch (err) {
         console.error("persistInferredGoal 失败:", err);
@@ -1926,9 +2106,18 @@
 
     async function bootstrapApp() {
       if (!supabaseClient) {
-        // 数据库尚未配置：跳过登录，直接用mock数据展示整个应用，方便先看界面效果
+        // 数据库尚未配置：跳过登录，进入 demo 模式。
+        // 用 localStorage 保存/恢复会话，刷新后可“继续上次对话”或“重新开始”。
         document.getElementById("authScreen").style.display = "none";
         document.getElementById("appShell").style.display = "block";
+
+        const choice = await askRestoreSession();
+        if (choice === true) {
+          restoreSession();            // 继续上次的对话与学习目标
+        } else if (choice === false) {
+          resetUserState();            // 清空内存态
+          clearSession();             // 清空本地存档
+        }
         await init();
         return;
       }
@@ -2091,6 +2280,30 @@
       };
     }
 
+    // AI 出题接口不可用时的本地兜底：保证右侧面板始终出现一道与目标主题相关的真实选择题，
+    // 而不是退回无关的引导题或空白。
+    function buildLocalTopicQuestion(topic) {
+      const t = (topic && topic !== "Not set yet") ? topic : "this topic";
+      return {
+        title: `Which of the following is the most effective first step when starting to learn ${t}?`,
+        type: "multiple_choice",
+        options: [
+          `Build a small real project or example in ${t}`,
+          `Memorize every term before doing anything`,
+          `Skip the fundamentals and jump straight to advanced material`,
+          `Avoid any practice until you finish a full textbook`
+        ],
+        answer: "A",
+        explanation: `Active, project-based practice is the fastest way to build real skill in ${t} — it lets you apply what you learn instead of only reading about it.`,
+        difficulty: "Easy",
+        conceptName: t,
+        topic: t,
+        concept_id: null,
+        generatedByCoach: true,
+        questionType: "quiz"
+      };
+    }
+
     // 根据学习目标生成动态学习地图
     function generateLearningMap(inferred) {
       const topic = inferred.topic;
@@ -2144,12 +2357,24 @@
         ];
       }
       
-      return path;
+      return path.map(n => ({ ...n, mastery: 0 }));
     }
 
     function applyCoachGoalAndQuestion(text) {
       const inferred = inferLearningGoal(text);
       const hasRealGoal = !!state.learningGoal && state.learningGoal !== "Not set yet";
+
+      // 初始状态、用户直接点 "I'm looking for practice questions" 之类：
+      // 还没目标就无从出练习题。明确引导用户先说想学什么，并且不往右侧塞一道含义模糊的引导题。
+      if (!hasRealGoal && /practice|quiz|questions?|challenge|test myself|mini/i.test(text)) {
+        state.coachStatus = "Tell me a subject first — then I'll set your goal and quiz you on the right →";
+        state.suggestedReplies = [
+          `I want to practice Italian`,
+          `I want to practice Python`,
+          `Explain the concept first`
+        ];
+        return inferred;
+      }
 
       // 本地推断只用于决定“引导题”的走向，不再据此写死 learningGoal。
       // 真正写入 state.learningGoal 的是 extractGoalFromConversation()（调用 AI 从整段对话提取），
@@ -2232,6 +2457,7 @@
       hasLearningGoal = true;
       learningNodes = generateLearningMap({ goal, topic });
       renderLearningMap();
+      renderAIRecommendation();
       persistInferredGoal({ goal, topic });
       renderWorkspaceCoach();
       try { await generateQuestionFromAI(); } catch (e) { console.error("首题生成失败:", e); }
@@ -2257,11 +2483,17 @@
           choicesContainer.style.display = "none";
         } else {
           choicesContainer.style.display = "flex";
-          choicesContainer.innerHTML = state.suggestedReplies.map(reply => `
-            <button class="choice" onclick="handleCoachInteraction('${reply}')">${reply}</button>
-          `).join("");
+          choicesContainer.innerHTML = state.suggestedReplies.map(reply =>
+            `<button class="choice" data-reply="${escapeHtml(reply)}">${escapeHtml(reply)}</button>`
+          ).join("");
+          // 用事件监听代替内联 onclick：回复文案里若含单/双引号也不会再破坏 JS 字符串
+          choicesContainer.querySelectorAll(".choice").forEach(btn => {
+            btn.addEventListener("click", () => handleCoachInteraction(btn.dataset.reply));
+          });
         }
       }
+
+      saveSession();
     }
 
     // 把页面聊天记录整理成合法的多轮 messages：去掉空内容、合并连续相同角色，
@@ -2309,6 +2541,11 @@
         return data.reply || "I’ve mapped your message into a learning plan and prepared a tailored challenge.";
       } catch (error) {
         console.error("AI Coach request failed:", error);
+        if (state.learningGoal === "Not set yet") {
+          return lang === "Chinese"
+            ? "好的！先告诉我你想练习哪个学科（比如意大利语、Python、统计学），我会帮你设定学习目标，并在右侧面板准备第一道练习题。"
+            : "Sure! First tell me which subject you'd like to practice (e.g. Italian, Python, Statistics), and I'll set your goal and prepare your first quiz on the right panel.";
+        }
         const inferred = inferLearningGoal(text);
         return lang === "Chinese"
           ? `我已经把你的目标整理成了学习方案：${inferred.goal}。正在围绕${inferred.topic.toLowerCase()}为你准备练习题。`
@@ -2656,6 +2893,7 @@
         renderQuizFeedback(correct, progress);
         await fetchLearningMap();
         renderLearningMap();
+        renderAIRecommendation();
         await fetchMistakes();
         renderMistakes();
         await updateStreak();   // 完成一次真实答题即算活跃，更新连续学习天数
@@ -2749,7 +2987,7 @@
     }
 
     // 让 AI 根据当前 Learning Goal 动态生成一道带标准答案的练习题
-    async function generateQuestionFromAI() {
+    async function generateQuestionFromAI(focusTopic) {
       if (state.learningGoal === "Not set yet") {
         // 还没确定目标：退回元认知引导题
         state.practiceQuestion = buildCoachPracticeQuestion("", "");
@@ -2758,8 +2996,9 @@
         return;
       }
 
-      // 用已保存的真实 topic（不要从 goal 字符串重新推断，否则会解析出错主题）
-      const inferred = { topic: state.learningTopic || "Core concepts", focus: "core concepts" };
+      // focusTopic 存在时（用户从地图点击某节点练习），临时把这一题聚焦到该概念；
+      // 否则用已保存的真实 topic（不要从 goal 字符串重新推断，否则会解析出错主题）
+      const inferred = { topic: focusTopic || state.learningTopic || "Core concepts", focus: "core concepts" };
       const previousQuestion = currentQuestion ? currentQuestion.title : "";
       const requestedType = nextQuizType(); // 在 选择题/填空题/简答题 间轮转
 
@@ -2810,11 +3049,10 @@
         };
         renderCurrentQuestion();
       } catch (err) {
-        console.error("AI 出题失败，退回引导题:", err);
-        // 兜底：仅在还没有题目时给一道引导题，避免覆盖正在做的题
-        if (!currentQuestion) {
-          state.practiceQuestion = buildCoachPracticeQuestion(state.learningGoal, state.learningGoal);
-          currentQuestion = state.practiceQuestion;
+        console.error("AI 出题失败，退回主题相关兜底题:", err);
+        // 兜底：优先给出与目标主题相关的题，而不是退回无关的引导题或空白
+        if (!currentQuestion || currentQuestion.questionType === "coach_guidance") {
+          currentQuestion = buildLocalTopicQuestion(state.learningTopic || state.learningGoal);
           renderCurrentQuestion();
         }
       }
@@ -2866,6 +3104,15 @@
         renderWorkspaceCoach();
       }
       showToastNotification("Learning Map Updated");
+
+      // 无数据库 / demo：本地推进学习地图 + 进度，让仪表盘随作答实时更新
+      if (correct) {
+        mockCompletion = Math.min(100, mockCompletion + 8);
+        advanceLearningNode();
+      }
+      renderLearningMap();
+      renderAIRecommendation();
+      renderLearningProgress(mockCompletion, mistakes.length, 0);
     }
 
     function showToastNotification(text) {
@@ -2895,9 +3142,60 @@
       showToastNotification("Loaded next question");
     }
 
+    // 地图随学习实时刷新时的本地推进（无数据库 / demo 模式）：
+    // 每答对一次，把当前 "learning" 节点掌握度 +25，满 60 即标记完成并解锁下一节点。
+    function advanceLearningNode() {
+      if (!learningNodes.length) return;
+      const idx = learningNodes.findIndex(n => n.status === "learning");
+      if (idx === -1) return;
+      const node = learningNodes[idx];
+      node.mastery = Math.min(100, (node.mastery || 0) + 25);
+      if (node.mastery >= 60) {
+        node.status = "completed";
+        node.icon = statusToIcon("completed");
+        const next = learningNodes[idx + 1];
+        if (next && next.status === "locked") {
+          next.status = "learning";
+          next.icon = statusToIcon("learning");
+        }
+      }
+    }
+
+    // 从地图点击某节点 → 跳到 Learning Workspace 并生成聚焦该概念的练习
+    function practiceNode(title) {
+      goTo('workspace');
+      try { generateQuestionFromAI(title); } catch (e) { console.error("节点练习生成失败:", e); }
+    }
+
+    // 仪表盘 "AI recommendation" 卡片：根据当前目标/进度动态生成建议
+    function renderAIRecommendation() {
+      const el = document.getElementById("aiRecommendation");
+      if (!el) return;
+      if (!hasLearningGoal || learningNodes.length === 0) {
+        el.innerHTML = `Start with <b>AI Coach</b> to build your personalized map — tell Sherpa what you want to learn, and it'll design your roadmap. <button class="cta" onclick="goTo('workspace')">Start with AI Coach →</button>`;
+        return;
+      }
+      const inProgress = learningNodes.find(n => n.status === "learning");
+      const weak = learningNodes.filter(n => n.status !== "completed");
+      const topic = state.learningTopic || state.learningGoal;
+      if (inProgress) {
+        el.innerHTML = `Your <b>${topic}</b> roadmap is live. Next up: <b>${inProgress.title}</b> — answer a few quizzes on the right to move it to "Completed".`;
+      } else if (weak.length) {
+        el.innerHTML = `Solid progress on <b>${topic}</b>! A couple of weak spots remain (${weak.slice(0, 2).map(w => w.title).join(", ")}). Keep practicing to master them.`;
+      } else {
+        el.innerHTML = `🎉 You've completed every node in your <b>${topic}</b> roadmap. Try a harder challenge or pick a new subject!`;
+      }
+    }
+
     function renderLearningMap() {
       const map = document.getElementById("learningMap");
-      
+      const badge = document.getElementById("learningTrackBadge");
+      if (badge) {
+        badge.textContent = (hasLearningGoal && state.learningGoal !== "Not set yet")
+          ? `${state.learningTopic || state.learningGoal} track`
+          : "No track yet";
+      }
+
       if (!hasLearningGoal || learningNodes.length === 0) {
         // 初始状态：还未确定学习目标
         map.innerHTML = `
@@ -2910,19 +3208,36 @@
             <button class="primary" onclick="goTo('workspace')">Start with AI Coach</button>
           </div>
         `;
-      } else {
-        // 有学习目标时：显示动态学习地图
-        map.innerHTML = learningNodes.map(node => `
+        return;
+      }
+
+      // 有学习目标时：显示动态、可交互的学习地图
+      map.innerHTML = learningNodes.map((node) => {
+        const mastery = node.mastery || 0;
+        const locked = node.status === "locked";
+        const statusLabel = node.status === "completed" ? "Completed"
+          : node.status === "learning" ? "In progress" : "Locked";
+        const badgeClass = node.status === "completed" ? "green"
+          : node.status === "learning" ? "purple" : "amber";
+        const safeTitle = String(node.title).replace(/'/g, "\\'");
+        const btn = locked
+          ? `<button class="practice-btn" disabled>🔒 Locked</button>`
+          : `<button class="practice-btn" onclick="practiceNode('${safeTitle}')">Practice →</button>`;
+        return `
           <div class="node ${node.status}">
             <div class="node-icon">${node.icon}</div>
-            <div>
+            <div class="node-body">
               <h3>${node.title}</h3>
-              <p style="margin:0">${node.description}</p>
+              <p class="node-desc">${node.description}</p>
+              <div class="node-progress"><span style="width:${mastery}%"></span></div>
             </div>
-            <span class="badge ${node.status === "completed" ? "green" : node.status === "learning" ? "purple" : ""}">${node.status}</span>
-          </div>
-        `).join("");
-      }
+            <div class="node-side">
+              <span class="badge ${badgeClass}">${statusLabel}</span>
+              ${btn}
+            </div>
+          </div>`;
+      }).join("");
+      saveSession();
     }
 
     function renderMistakes() {
