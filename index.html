@@ -1570,6 +1570,7 @@
     ============================================================ */
     let authMode = "signin";
     let authStateSubscription = null;
+    let authInitializedFor = null; // 记录已初始化过的 userId，防止 SIGNED_IN 重复事件再次 reset+init 把页面踢回 Home
 
     function switchAuthMode(mode) {
       authMode = mode;
@@ -1802,6 +1803,13 @@
     }
 
     async function onAuthSuccess(user) {
+      // 幂等保护：同一用户已经初始化过且 appShell 已显示，则直接跳过。
+      // 避免 onAuthStateChange 的 SIGNED_IN 事件被重复触发时再次 resetUserState()
+      // （它会把 state.activePage 设回 "landing"）并重新 init()，导致用户在
+      // Learning Workspace 时被自动踢回主页。
+      if (authInitializedFor === user.id && document.getElementById("appShell").style.display === "block") {
+        return;
+      }
       // 双保险：万一是从刷新页面直接登录（没经过 clearAuthState），也确保状态是干净的
       resetUserState();
       CURRENT_USER_ID = user.id;
@@ -1810,11 +1818,13 @@
       document.getElementById("authScreen").style.display = "none";
       document.getElementById("appShell").style.display = "block";
       await init();
+      authInitializedFor = user.id;
     }
 
     function clearAuthState() {
       CURRENT_USER_ID = null;
       CURRENT_PLAN_ID = null;
+      authInitializedFor = null; // 重置，使下一次登录（即使是同一用户）能重新初始化
       // 关键修复：登出时把所有内存态重置回"全新用户"的样子，
       // 防止下一个登录的账号看到上一位的对话 / 学习地图 / 错题。
       resetUserState();
