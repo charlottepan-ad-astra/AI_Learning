@@ -857,6 +857,36 @@
       font-weight: 800;
       text-decoration: none;
     }
+
+    /* AI 出题加载态 */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .quiz-loading {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 48px 20px;
+      gap: 18px;
+    }
+    .quiz-loading .spinner {
+      width: 46px;
+      height: 46px;
+      border: 4px solid var(--panel, #eef2ff);
+      border-top-color: var(--brand, #6366f1);
+      border-radius: 50%;
+      animation: spin 0.9s linear infinite;
+    }
+    .quiz-loading .loading-title {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: var(--ink, #1f2937);
+    }
+    .quiz-loading .loading-sub {
+      font-size: 0.86rem;
+      color: var(--muted, #6b7280);
+      max-width: 360px;
+    }
   </style>
 </head>
 <body>
@@ -952,7 +982,13 @@
                   First, tell the AI coach what you want to learn, and a personalized quiz will be generated for you!
                 </p>
               </div>
-              
+
+              <div id="quizLoading" class="quiz-loading" style="display:none;">
+                <div class="spinner"></div>
+                <div class="loading-title">AI 正在为你出题…</div>
+                <div class="loading-sub">根据你的学习目标生成个性化的练习题目，通常只需几秒，请稍候。</div>
+              </div>
+
               <div class="card quiz-box" id="quizContent" style="margin: 0; max-width: 100%; width: 100%; padding: 0; background: transparent; border: 0; box-shadow: none; display: none;">
                 <div class="category-title">
                   <span class="badge amber" id="workspaceQuizDifficulty">Difficulty: Medium</span>
@@ -1183,6 +1219,9 @@
     const AI_CHAT_ENDPOINT = "http://127.0.0.1:3000/api/chat";
     const AI_Q_ENDPOINT = "http://127.0.0.1:3000/api/generate-question";
     const AI_EXTRACT_GOAL_ENDPOINT = "http://127.0.0.1:3000/api/extract-goal";
+    const AI_EXTRACT_PROFILE_ENDPOINT = "http://127.0.0.1:3000/api/extract-learner-profile";
+    const AI_ROADMAP_ENDPOINT = "http://127.0.0.1:3000/api/generate-roadmap";
+    const AI_ADAPT_ENDPOINT = "http://127.0.0.1:3000/api/evaluate-learning-activity";
     const AI_GRADE_ENDPOINT = "http://127.0.0.1:3000/api/grade-answer";
     // 题型轮转：让右侧测验在 选择题 / 填空题 / 简答题 之间变化，避免永远是选择题
     let quizTypeRotation = 0;
@@ -1191,6 +1230,12 @@
       const t = types[quizTypeRotation % types.length];
       quizTypeRotation++;
       return t;
+    }
+    function nextStrategyQuizType() {
+      const mode = state.strategyProfile?.quiz_mode;
+      if (mode === "scaffold") return "multiple_choice";
+      if (mode === "challenge") return "short_answer";
+      return nextQuizType();
     }
 
     const state = {
@@ -1207,7 +1252,10 @@
       ],
       learningGoal: "Not set yet",
       coachStatus: "Waiting for your goal",
-      practiceQuestion: null
+      practiceQuestion: null,
+      learnerProfile: {},
+      strategyProfile: {},
+      adaptiveState: {}
     };
 
     // 下面四个改成 let，作为mock数据的初始值/兜底值；
@@ -1222,6 +1270,7 @@
     let mistakes = []; // 初始为空，表示还没有错题
 
     let resources = []; // 初始为空，表示还没有推荐的学习资源
+    let roadmapGenerationPromise = null;
 
     /* ============================================================
        切账号 / 登出时统一调用：把所有 in-memory 业务态恢复到"全新用户"的样子
@@ -1245,6 +1294,9 @@
       state.learningGoal = "Not set yet";
       state.coachStatus = "Waiting for your goal";
       state.practiceQuestion = null;
+      state.learnerProfile = {};
+      state.strategyProfile = {};
+      state.adaptiveState = {};
 
       currentQuestion = null;
       learningNodes = [];
@@ -1560,6 +1612,8 @@
     function renderCurrentQuestion() {
       const quizPlaceholder = document.getElementById("quizPlaceholder");
       const quizContent = document.getElementById("quizContent");
+      const quizLoading = document.getElementById("quizLoading");
+      if (quizLoading) quizLoading.style.display = "none";
 
       if (!currentQuestion) {
         // No question available - show placeholder
@@ -1724,6 +1778,9 @@
           learningGoal: state.learningGoal,
           learningTopic: state.learningTopic,
           coachStatus: state.coachStatus,
+          learnerProfile: state.learnerProfile,
+          strategyProfile: state.strategyProfile,
+          adaptiveState: state.adaptiveState,
           hasLearningGoal: hasLearningGoal,
           learningNodes: learningNodes,
           currentQuestion: currentQuestion,
@@ -1757,6 +1814,9 @@
       if (typeof s.learningGoal === "string") state.learningGoal = s.learningGoal;
       if (typeof s.learningTopic === "string") state.learningTopic = s.learningTopic;
       if (typeof s.coachStatus === "string") state.coachStatus = s.coachStatus;
+      if (s.learnerProfile && typeof s.learnerProfile === "object") state.learnerProfile = s.learnerProfile;
+      if (s.strategyProfile && typeof s.strategyProfile === "object") state.strategyProfile = s.strategyProfile;
+      if (s.adaptiveState && typeof s.adaptiveState === "object") state.adaptiveState = s.adaptiveState;
       if (typeof s.hasLearningGoal === "boolean") hasLearningGoal = s.hasLearningGoal;
       if (Array.isArray(s.learningNodes)) learningNodes = s.learningNodes;
       if (s.currentQuestion !== undefined) currentQuestion = s.currentQuestion;
@@ -1800,6 +1860,8 @@
       try {
         await Promise.all([
           fetchPlanMeta(),     // 拉 plan 的 subject/goal，灌到 state.learningGoal
+          fetchLearnerProfileAndStrategy(),
+          fetchAdaptiveLearningState(),
           fetchLearningMap(),
           fetchMistakes(),
           fetchResources(),
@@ -1807,6 +1869,7 @@
           loadNextQuestion(),
           fetchStats()         // 顶部 Learning Progress 卡片
         ]);
+        await ensureAiRoadmapGenerated();
       } catch (err) {
         console.error("从数据库加载数据时出现异常，继续使用示例数据兜底:", err);
       }
@@ -1976,6 +2039,107 @@
     // 聊天后调用：把推断出来的 goal/subject 写回 plan + 挂上对应的概念。
     // 这是 fire-and-forget，UI 已经立刻给了反馈（AI-driven 的 map + practice question），
     // DB 这次只是补登记，让用户下次刷新或在 learning map 页面看到的依然是他的目标。
+    async function persistAiRoadmap(roadmap) {
+      const conceptKeys = roadmap.concepts.map(c => c.concept_key);
+      const { data: existing, error: existingError } = await supabaseClient
+        .from("concepts")
+        .select("id, concept_key")
+        .in("concept_key", conceptKeys);
+      if (existingError) throw existingError;
+      const existingKeys = new Set((existing || []).map(c => c.concept_key));
+      const newConcepts = roadmap.concepts
+        .filter(c => !existingKeys.has(c.concept_key))
+        .map(c => ({ concept_key: c.concept_key, name: c.name, description: c.description, difficulty: c.difficulty, domain: state.learningTopic }));
+      if (newConcepts.length) {
+        const { error } = await supabaseClient.from("concepts").insert(newConcepts);
+        if (error) throw error;
+      }
+      const { data: concepts, error: conceptsError } = await supabaseClient
+        .from("concepts")
+        .select("id, concept_key")
+        .in("concept_key", conceptKeys);
+      if (conceptsError || !concepts || concepts.length !== conceptKeys.length) throw conceptsError || new Error("Roadmap concepts could not be resolved.");
+      const idsByKey = Object.fromEntries(concepts.map(c => [c.concept_key, c.id]));
+
+      // Replacing a roadmap changes only this plan's links. Global concepts, attempts,
+      // and learning evidence are retained for auditability.
+      const { error: removeLinksError } = await supabaseClient
+        .from("learning_plan_concepts")
+        .delete()
+        .eq("learning_plan_id", CURRENT_PLAN_ID);
+      if (removeLinksError) throw removeLinksError;
+      const planConceptRows = roadmap.concepts.map(c => ({
+        learning_plan_id: CURRENT_PLAN_ID,
+        concept_id: idsByKey[c.concept_key],
+        sequence_order: c.sequence_order
+      }));
+      const { error: planConceptError } = await supabaseClient.from("learning_plan_concepts").insert(planConceptRows);
+      if (planConceptError) throw planConceptError;
+
+      const dependencyRows = roadmap.dependencies.map(d => ({
+        concept_id: idsByKey[d.concept_key],
+        prerequisite_concept_id: idsByKey[d.prerequisite_concept_key]
+      })).filter(d => d.concept_id && d.prerequisite_concept_id);
+      if (dependencyRows.length) {
+        const { error: dependencyError } = await supabaseClient
+          .from("concept_dependencies")
+          .upsert(dependencyRows, { onConflict: "concept_id,prerequisite_concept_id", ignoreDuplicates: true });
+        if (dependencyError) throw dependencyError;
+      }
+
+      const { error: roadmapError } = await supabaseClient.from("learning_plan_roadmaps").upsert({
+        learning_plan_id: CURRENT_PLAN_ID,
+        rationale: roadmap.rationale || "The sequence moves from foundations to the learner's target outcome.",
+        milestones: roadmap.milestones,
+        learner_profile_snapshot: state.learnerProfile,
+        strategy_snapshot: state.strategyProfile,
+        generated_at: new Date().toISOString()
+      }, { onConflict: "learning_plan_id" });
+      if (roadmapError) throw roadmapError;
+    }
+
+    async function ensureAiRoadmapGenerated() {
+      if (!supabaseClient || !CURRENT_PLAN_ID || state.learningGoal === "Not set yet") return;
+      if (roadmapGenerationPromise) return roadmapGenerationPromise;
+      roadmapGenerationPromise = (async () => {
+        const { data: existing, error: existingError } = await supabaseClient
+          .from("learning_plan_roadmaps")
+          .select("learning_plan_id")
+          .eq("learning_plan_id", CURRENT_PLAN_ID)
+          .maybeSingle();
+        if (existingError) throw existingError;
+        if (existing) return;
+
+        state.coachStatus = `Building your ${state.learningTopic || "personalized"} roadmap`;
+        renderWorkspaceCoach();
+        const response = await fetch(AI_ROADMAP_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            goal: state.learningGoal,
+            topic: state.learningTopic || state.learnerProfile.learning_goal,
+            learnerProfile: state.learnerProfile,
+            strategyProfile: state.strategyProfile,
+            language: detectLang(state.learningGoal)
+          })
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        if (!data.roadmap || !Array.isArray(data.roadmap.concepts)) throw new Error("Invalid roadmap response.");
+        await persistAiRoadmap(data.roadmap);
+        await fetchLearningMap();
+        renderLearningMap();
+        renderAIRecommendation();
+        state.coachStatus = `Roadmap ready: ${state.learningTopic || "your learning plan"}`;
+        renderWorkspaceCoach();
+      })().catch(error => {
+        console.error("AI roadmap generation failed:", error);
+        state.coachStatus = "Your goal is set. Sherpa will build the roadmap when the AI service is available.";
+        renderWorkspaceCoach();
+      }).finally(() => { roadmapGenerationPromise = null; });
+      return roadmapGenerationPromise;
+    }
+
     async function persistInferredGoal(inferred) {
       if (!supabaseClient || !CURRENT_PLAN_ID || !inferred) return;
       try {
@@ -1983,7 +2147,6 @@
           .from("learning_plans")
           .update({ subject: inferred.topic, goal: inferred.goal })
           .eq("id", CURRENT_PLAN_ID);
-        await attachConceptsForTopic(CURRENT_PLAN_ID, inferred.topic, inferred.goal);
         // 从 DB 重新拉一遍，让 learning map / quiz 的渲染与持久化保持一致
         await fetchLearningMap();
         renderLearningMap();
@@ -2016,6 +2179,44 @@
     // 没有就建一条**空的** plan（subject/goal 都为 null，不挂任何 concept）——
     // 这是 chat-first 流程：先让用户和 AI 聊出兴趣，再生成专属内容。
     // 老的 attachDemoConceptsToPlan 已废弃，保留仅作参考，新账号不再调用。
+    async function fetchAdaptiveLearningState() {
+      if (!supabaseClient || !CURRENT_USER_ID || !CURRENT_PLAN_ID) return;
+      const { data, error } = await supabaseClient
+        .from("adaptive_learning_states")
+        .select("active_concept_id, next_concept_id, next_quiz_difficulty, recommended_question_type, review_at, knowledge_gap, last_decision")
+        .eq("user_id", CURRENT_USER_ID)
+        .eq("learning_plan_id", CURRENT_PLAN_ID)
+        .maybeSingle();
+      if (error) { console.error("Failed to load adaptive state:", error); return; }
+      if (!data) return;
+      let nextConceptName = "";
+      if (data.next_concept_id) {
+        const { data: concept } = await supabaseClient.from("concepts").select("name").eq("id", data.next_concept_id).maybeSingle();
+        nextConceptName = concept?.name || "";
+      }
+      state.adaptiveState = { ...data, next_concept_name: nextConceptName };
+    }
+
+    async function fetchLearnerProfileAndStrategy() {
+      if (!supabaseClient || !CURRENT_USER_ID) return;
+      const { data: profile, error: profileError } = await supabaseClient
+        .from("learner_profiles")
+        .select("learning_goal, current_level, motivation, preferred_learning_style, available_study_time_minutes, target_outcome")
+        .eq("user_id", CURRENT_USER_ID)
+        .maybeSingle();
+      if (profileError) { console.error("Failed to load learner profile:", profileError); return; }
+      if (profile) state.learnerProfile = profile;
+
+      if (!CURRENT_PLAN_ID) return;
+      const { data: strategy, error: strategyError } = await supabaseClient
+        .from("learning_plan_strategies")
+        .select("recommended_session_minutes, recommended_content_format, initial_quiz_difficulty, quiz_mode, coaching_approach, resource_preference")
+        .eq("learning_plan_id", CURRENT_PLAN_ID)
+        .maybeSingle();
+      if (strategyError) { console.error("Failed to load learning strategy:", strategyError); return; }
+      if (strategy) state.strategyProfile = strategy;
+    }
+
     async function getOrCreateActivePlan(userId) {
       const { data: existing, error: findErr } = await supabaseClient
         .from("learning_plans")
@@ -2413,6 +2614,75 @@
        调用后端 /api/extract-goal，让 AI 根据整段对话判断用户真正想学什么，
        从而解决“学习目标从通用按钮文字硬抽、与聊天内容无关”的问题。
        ============================================================ */
+    function mergeKnownProfile(previous, incoming) {
+      const next = { ...(previous || {}) };
+      for (const [key, value] of Object.entries(incoming || {})) {
+        if (value !== "" && value !== null && value !== undefined) next[key] = value;
+      }
+      return next;
+    }
+
+    async function persistLearnerProfileAndStrategy() {
+      if (!supabaseClient || !CURRENT_USER_ID) return;
+      const profile = state.learnerProfile || {};
+      const strategy = state.strategyProfile || {};
+      const { error: profileError } = await supabaseClient.from("learner_profiles").upsert({
+        user_id: CURRENT_USER_ID,
+        learning_goal: profile.learning_goal || null,
+        current_level: profile.current_level || null,
+        motivation: profile.motivation || null,
+        preferred_learning_style: profile.preferred_learning_style || null,
+        available_study_time_minutes: profile.available_study_time_minutes || null,
+        target_outcome: profile.target_outcome || null
+      }, { onConflict: "user_id" });
+      if (profileError) throw profileError;
+      if (!CURRENT_PLAN_ID) return;
+      const planUpdate = {};
+      if (profile.learning_goal) planUpdate.goal = profile.learning_goal;
+      if (profile.current_level) planUpdate.level = profile.current_level;
+      if (Object.keys(planUpdate).length) {
+        const { error: planError } = await supabaseClient
+          .from("learning_plans")
+          .update(planUpdate)
+          .eq("id", CURRENT_PLAN_ID)
+          .eq("user_id", CURRENT_USER_ID);
+        if (planError) throw planError;
+      }
+      const { error: strategyError } = await supabaseClient.from("learning_plan_strategies").upsert({
+        learning_plan_id: CURRENT_PLAN_ID,
+        recommended_session_minutes: strategy.recommended_session_minutes || null,
+        recommended_content_format: strategy.recommended_content_format || null,
+        initial_quiz_difficulty: strategy.initial_quiz_difficulty || null,
+        quiz_mode: strategy.quiz_mode || null,
+        coaching_approach: strategy.coaching_approach || null,
+        resource_preference: strategy.resource_preference || null
+      }, { onConflict: "learning_plan_id" });
+      if (strategyError) throw strategyError;
+    }
+
+    async function extractLearnerProfileFromConversation() {
+      const history = normalizeCoachHistory(state.chatHistory);
+      if (!history.length) return;
+      try {
+        const response = await fetch(AI_EXTRACT_PROFILE_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messages: history, language: detectLang(history.map(h => h.content).join(" ")) })
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        state.learnerProfile = mergeKnownProfile(state.learnerProfile, data.profile);
+        state.strategyProfile = mergeKnownProfile(state.strategyProfile, data.strategy);
+        if (state.learnerProfile.learning_goal && state.learningGoal === "Not set yet") {
+          await lockGoalAndGenerateQuiz(state.learnerProfile.learning_goal, state.learningTopic || state.learnerProfile.learning_goal);
+        }
+        await persistLearnerProfileAndStrategy();
+        await ensureAiRoadmapGenerated();
+      } catch (error) {
+        console.error("Learner profile extraction failed:", error);
+      }
+    }
+
     async function extractGoalFromConversation() {
       // 目标一旦锁定就停止重复提取/出题，避免每条消息都打接口、覆盖正在做的题
       if (state.learningGoal !== "Not set yet") return;
@@ -2455,7 +2725,9 @@
       state.learningTopic = topic;
       state.coachStatus = `Learning: ${topic}`;
       hasLearningGoal = true;
-      learningNodes = generateLearningMap({ goal, topic });
+      // Connected users receive the persisted AI roadmap. Keep the existing local map
+      // only for offline demo mode, where no database-backed roadmap can be stored.
+      learningNodes = supabaseClient ? [] : generateLearningMap({ goal, topic });
       renderLearningMap();
       renderAIRecommendation();
       persistInferredGoal({ goal, topic });
@@ -2529,6 +2801,8 @@
           body: JSON.stringify({
             messages: [...history, { role: "user", content: text }],
             learningGoal: goalText,
+            learnerProfile: state.learnerProfile,
+            strategyProfile: state.strategyProfile,
             language: lang
           })
         });
@@ -2566,6 +2840,7 @@
 
       // 从真实对话中提取学习目标（AI 后端），让 goal 与聊天内容相关
       await extractGoalFromConversation();
+      await extractLearnerProfileFromConversation();
       showToastNotification(
         (state.learningGoal && state.learningGoal !== "Not set yet")
           ? `Goal set: ${state.learningGoal}`
@@ -2592,6 +2867,7 @@
 
       // 从真实对话中提取学习目标（AI 后端），让 goal 与聊天内容相关
       await extractGoalFromConversation();
+      await extractLearnerProfileFromConversation();
       showToastNotification(
         (state.learningGoal && state.learningGoal !== "Not set yet")
           ? `Goal set: ${state.learningGoal}`
@@ -2613,19 +2889,55 @@
       element.classList.add("selected");
     }
 
-    /* ============================================================
-       简单的规则评分引擎（Mastery Engine）
-       correct: mastery +20；incorrect: mastery -10；上下限0-100
-       这是刻意简化过的规则，不追求教学理论上的精确，只求能演示闭环
-    ============================================================ */
-    function computeMastery(prevMastery, correct) {
-      const delta = correct ? 20 : -10;
-      const mastery = Math.max(0, Math.min(100, (prevMastery || 0) + delta));
-      let status = "Not Started";
-      if (mastery >= 75) status = "Mastered";
-      else if (mastery >= 40) status = "Practicing";
-      else if (mastery > 0) status = "Learning";
-      return { mastery, status };
+    function masteryStatus(mastery) {
+      if (mastery >= 75) return "Mastered";
+      if (mastery >= 40) return "Practicing";
+      return mastery > 0 ? "Learning" : "Not Started";
+    }
+
+    async function getAdaptiveDecision(conceptId, activity) {
+      const [{ data: progress, error: progressError }, { data: evidence, error: evidenceError }, { data: planConcepts, error: roadmapError }] = await Promise.all([
+        supabaseClient.from("learning_progress").select("mastery, total_attempts, correct_rate").eq("user_id", CURRENT_USER_ID).eq("concept_id", conceptId).maybeSingle(),
+        supabaseClient.from("learning_evidence").select("result, evidence_dimension, notes, created_at").eq("user_id", CURRENT_USER_ID).eq("concept_id", conceptId).order("created_at", { ascending: false }).limit(8),
+        supabaseClient.from("learning_plan_concepts").select("concept_id, sequence_order, concepts ( id, name, concept_key, description, difficulty )").eq("learning_plan_id", CURRENT_PLAN_ID).order("sequence_order")
+      ]);
+      if (progressError || evidenceError || roadmapError || !planConcepts?.length) throw progressError || evidenceError || roadmapError || new Error("Roadmap context is unavailable.");
+      const conceptIds = planConcepts.map(item => item.concept_id);
+      const { data: dependencies, error: dependencyError } = await supabaseClient
+        .from("concept_dependencies")
+        .select("concept_id, prerequisite_concept_id")
+        .in("concept_id", conceptIds);
+      if (dependencyError) throw dependencyError;
+      const byId = Object.fromEntries(planConcepts.map(item => [item.concept_id, item.concepts]));
+      const roadmap = planConcepts.map(item => ({
+        concept_key: item.concepts?.concept_key,
+        name: item.concepts?.name,
+        description: item.concepts?.description,
+        difficulty: item.concepts?.difficulty,
+        sequence_order: item.sequence_order,
+        prerequisite_concept_keys: (dependencies || []).filter(dep => dep.concept_id === item.concept_id).map(dep => byId[dep.prerequisite_concept_id]?.concept_key).filter(Boolean)
+      })).filter(item => item.concept_key);
+      const currentConcept = byId[conceptId];
+      if (!currentConcept?.concept_key) throw new Error("Current concept is not part of the roadmap.");
+      const response = await fetch(AI_ADAPT_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          learner_profile: state.learnerProfile,
+          strategy_profile: state.strategyProfile,
+          current_concept_key: currentConcept.concept_key,
+          current_progress: progress || { mastery: 0, total_attempts: 0, correct_rate: 0 },
+          recent_evidence: evidence || [],
+          roadmap,
+          activity,
+          language: detectLang(activity.question_title || state.learningGoal)
+        })
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json();
+      if (!payload.decision) throw new Error("Adaptive evaluator returned no decision.");
+      const nextConcept = roadmap.find(item => item.concept_key === payload.decision.next_concept_key) || roadmap.find(item => item.concept_key === currentConcept.concept_key);
+      return { decision: payload.decision, previousProgress: progress, nextConcept, conceptByKey: Object.fromEntries(planConcepts.map(item => [item.concepts?.concept_key, item.concept_id])) };
     }
 
     async function updateWrongQuestion(questionId, correct) {
@@ -2659,7 +2971,7 @@
       }
     }
 
-    async function updateLearningProgress(conceptId, correct) {
+    async function updateLearningProgress(conceptId, correct, decision) {
       const { data: existing } = await supabaseClient
         .from("learning_progress")
         .select("*")
@@ -2667,11 +2979,12 @@
         .eq("concept_id", conceptId)
         .maybeSingle();
 
-      const prevMastery = existing?.mastery || 0;
       const totalAttempts = (existing?.total_attempts || 0) + 1;
       const priorCorrectCount = existing ? Math.round((existing.correct_rate || 0) * (existing.total_attempts || 0)) : 0;
       const correctRate = (priorCorrectCount + (correct ? 1 : 0)) / totalAttempts;
-      const { mastery, status } = computeMastery(prevMastery, correct);
+      const mastery = Math.max(0, Math.min(100, Number(decision.updated_mastery) || 0));
+      const status = masteryStatus(mastery);
+      const reviewAt = new Date(Date.now() + Math.max(1, Number(decision.review_after_hours) || 24) * 60 * 60 * 1000).toISOString();
 
       const payload = {
         user_id: CURRENT_USER_ID,
@@ -2681,6 +2994,7 @@
         total_attempts: totalAttempts,
         correct_rate: correctRate,
         last_reviewed: new Date().toISOString(),
+        next_review: reviewAt,
         updated_at: new Date().toISOString()
       };
 
@@ -2692,18 +3006,47 @@
       return payload;
     }
 
-    function renderQuizFeedback(correct, progress) {
+    async function persistAdaptiveLearningState(conceptId, adaptive) {
+      const { decision, nextConcept, conceptByKey } = adaptive;
+      const nextConceptId = conceptByKey[decision.next_concept_key] || conceptId;
+      const reviewAt = new Date(Date.now() + Math.max(1, Number(decision.review_after_hours) || 24) * 60 * 60 * 1000).toISOString();
+      const knowledgeGap = decision.diagnosis || {};
+      const { error } = await supabaseClient.from("adaptive_learning_states").upsert({
+        user_id: CURRENT_USER_ID,
+        learning_plan_id: CURRENT_PLAN_ID,
+        active_concept_id: conceptId,
+        next_concept_id: nextConceptId,
+        next_quiz_difficulty: decision.next_quiz_difficulty,
+        recommended_question_type: decision.recommended_question_type,
+        review_at: reviewAt,
+        knowledge_gap: knowledgeGap,
+        last_decision: decision
+      }, { onConflict: "user_id,learning_plan_id" });
+      if (error) throw error;
+      state.adaptiveState = {
+        active_concept_id: conceptId,
+        next_concept_id: nextConceptId,
+        next_concept_name: nextConcept?.name || currentQuestion?.conceptName || "",
+        next_quiz_difficulty: decision.next_quiz_difficulty,
+        recommended_question_type: decision.recommended_question_type,
+        review_at: reviewAt,
+        knowledge_gap: knowledgeGap,
+        last_decision: decision
+      };
+    }
+
+    function renderQuizFeedback(correct, progress, decision) {
       const resultCard = document.getElementById("workspaceResultCard");
       resultCard.classList.toggle("incorrect", !correct);
 
       document.getElementById("workspaceResultBadge").textContent = correct ? "Correct" : "Needs review";
       document.getElementById("workspaceResultTitle").textContent = correct ? "Nice — that's right." : "Not quite — here's what happened.";
       document.getElementById("workspaceResultText").textContent = currentQuestion.explanation || "";
-      document.getElementById("workspaceUnderstoodText").textContent = correct
+      document.getElementById("workspaceUnderstoodText").textContent = decision?.diagnosis?.summary || (correct
         ? `You correctly applied ${currentQuestion.conceptName}.`
-        : `You're engaging with ${currentQuestion.conceptName}, but the core distinction still needs work.`;
-      document.getElementById("workspaceGapText").textContent = currentQuestion.explanation || "Review this concept before trying again.";
-      document.getElementById("workspaceNextText").textContent = `Mastery for ${currentQuestion.conceptName}: ${progress.mastery}% (${progress.status}).`;
+        : `You're engaging with ${currentQuestion.conceptName}, but the core distinction still needs work.`);
+      document.getElementById("workspaceGapText").textContent = decision?.diagnosis?.intervention || currentQuestion.explanation || "Review this concept before trying again.";
+      document.getElementById("workspaceNextText").textContent = `Mastery for ${currentQuestion.conceptName}: ${progress.mastery}% (${progress.status}).${decision?.next_concept_key ? " Sherpa has selected your next learning step." : ""}`;
 
       document.getElementById("workspaceFeedbackCollapse").classList.add("expanded");
     }
@@ -2731,7 +3074,11 @@
         }
 
         // Resolve a concept id from the question's topic / concept name
-        let conceptId = null;
+        let conceptId = q.concept_id || null;
+        if (!conceptId && CURRENT_PLAN_ID) {
+          conceptId = state.adaptiveState.next_concept_id || await pickActiveConcept();
+          if (conceptId) q.concept_id = conceptId;
+        }
         const topic = q.topic || q.conceptName || "";
         if (topic) {
           const { data: byName } = await supabaseClient
@@ -2874,23 +3221,40 @@
           .single();
         if (attemptErr) throw attemptErr;
 
-        await supabaseClient.from("learning_evidence").insert({
+        const adaptive = await getAdaptiveDecision(currentQuestion.concept_id, {
+          is_correct: correct,
+          question_type: type,
+          difficulty: currentQuestion.difficulty || "Medium",
+          question_title: currentQuestion.title,
+          user_answer: userAnswerText,
+          explanation: currentQuestion.explanation || ""
+        });
+
+        const { error: evidenceError } = await supabaseClient.from("learning_evidence").insert({
           user_id: CURRENT_USER_ID,
           concept_id: currentQuestion.concept_id,
           question_id: qId,
           attempt_id: attempt.id,
           result: correct ? "correct" : "incorrect",
-          evidence_dimension: "application",
-          notes: currentQuestion.explanation
+          evidence_dimension: adaptive.decision.evidence_dimension,
+          notes: JSON.stringify({
+            diagnosis: adaptive.decision.diagnosis,
+            next_concept_key: adaptive.decision.next_concept_key,
+            next_quiz_difficulty: adaptive.decision.next_quiz_difficulty,
+            recommended_question_type: adaptive.decision.recommended_question_type,
+            review_after_hours: adaptive.decision.review_after_hours
+          })
         });
+        if (evidenceError) throw evidenceError;
 
         await updateWrongQuestion(qId, correct);
         let progress = { mastery: 0 };
         if (currentQuestion.concept_id) {
-          progress = await updateLearningProgress(currentQuestion.concept_id, correct);
+          progress = await updateLearningProgress(currentQuestion.concept_id, correct, adaptive.decision);
+          await persistAdaptiveLearningState(currentQuestion.concept_id, adaptive);
         }
 
-        renderQuizFeedback(correct, progress);
+        renderQuizFeedback(correct, progress, adaptive.decision);
         await fetchLearningMap();
         renderLearningMap();
         renderAIRecommendation();
@@ -2934,6 +3298,8 @@
           sampleAnswer: question.answer || question.sample_answer || "",
           userAnswer,
           knowledgePoint: question.conceptName || "",
+          learnerProfile: state.learnerProfile,
+          strategyProfile: state.strategyProfile,
           language: detectLang(question.title)
         })
       });
@@ -2972,6 +3338,7 @@
       currentQuestion = null;
       renderCurrentQuestion();
       await extractGoalFromConversation();
+      await extractLearnerProfileFromConversation();
       if (state.learningGoal === "Not set yet") {
         // 仍未拿到可锁定目标：退回中性引导题，等待用户明确学科
         state.practiceQuestion = buildCoachPracticeQuestion("", "");
@@ -2987,7 +3354,21 @@
     }
 
     // 让 AI 根据当前 Learning Goal 动态生成一道带标准答案的练习题
+    // AI 出题加载态：在调用后端生成题目期间显示“AI 正在出题…”，
+    // 避免模型（尤其是推理型大模型）出卷耗时 30~90s 时界面看似卡死。
+    let _generatingQuestion = false;
+    function setQuizLoading(on) {
+      const loading = document.getElementById("quizLoading");
+      const content = document.getElementById("quizContent");
+      const placeholder = document.getElementById("quizPlaceholder");
+      if (loading) loading.style.display = on ? "flex" : "none";
+      if (content) content.style.display = on ? "none" : content.style.display;
+      if (placeholder) placeholder.style.display = on ? "none" : placeholder.style.display;
+    }
+
     async function generateQuestionFromAI(focusTopic) {
+      // 防止并发重复触发（例如连续点击“下一题”），避免同时打多个慢接口
+      if (_generatingQuestion) return;
       if (state.learningGoal === "Not set yet") {
         // 还没确定目标：退回元认知引导题
         state.practiceQuestion = buildCoachPracticeQuestion("", "");
@@ -2998,10 +3379,20 @@
 
       // focusTopic 存在时（用户从地图点击某节点练习），临时把这一题聚焦到该概念；
       // 否则用已保存的真实 topic（不要从 goal 字符串重新推断，否则会解析出错主题）
-      const inferred = { topic: focusTopic || state.learningTopic || "Core concepts", focus: "core concepts" };
+      let targetConcept = null;
+      if (!focusTopic && supabaseClient && CURRENT_PLAN_ID) {
+        const targetId = state.adaptiveState.next_concept_id || await pickActiveConcept();
+        if (targetId) {
+          const { data } = await supabaseClient.from("concepts").select("id, name, description").eq("id", targetId).maybeSingle();
+          targetConcept = data || null;
+        }
+      }
+      const inferred = { topic: focusTopic || targetConcept?.name || state.adaptiveState.next_concept_name || state.learningTopic || "Core concepts", focus: targetConcept?.description || "core concepts" };
       const previousQuestion = currentQuestion ? currentQuestion.title : "";
-      const requestedType = nextQuizType(); // 在 选择题/填空题/简答题 间轮转
+      const requestedType = state.adaptiveState.recommended_question_type || nextStrategyQuizType();
 
+      _generatingQuestion = true;
+      setQuizLoading(true);
       try {
         const response = await fetch(AI_Q_ENDPOINT, {
           method: "POST",
@@ -3010,9 +3401,11 @@
             goal: state.learningGoal,
             topic: inferred.topic,
             focus: inferred.focus,
-            difficulty: "Medium",
+            difficulty: state.adaptiveState.next_quiz_difficulty || state.strategyProfile.initial_quiz_difficulty || "Medium",
             previousQuestion,
             type: requestedType,
+            learnerProfile: state.learnerProfile,
+            strategyProfile: state.strategyProfile,
             language: detectLang(inferred.topic)
           })
         });
@@ -3041,9 +3434,9 @@
           answers: Array.isArray(q.answers) ? q.answers : [],
           explanation: q.explanation || "",
           difficulty: q.difficulty || "Medium",
-          conceptName: q.knowledge_point || inferred.topic,
+          conceptName: targetConcept?.name || q.knowledge_point || inferred.topic,
           topic: inferred.topic,
-          concept_id: null,
+          concept_id: targetConcept?.id || state.adaptiveState.next_concept_id || null,
           generatedByCoach: true,
           questionType: "quiz"              // 有标准答案/可评分，走评分流程、可进错题本
         };
@@ -3054,7 +3447,14 @@
         if (!currentQuestion || currentQuestion.questionType === "coach_guidance") {
           currentQuestion = buildLocalTopicQuestion(state.learningTopic || state.learningGoal);
           renderCurrentQuestion();
+        } else {
+          // 已有题目（如上一题）时，出错也要关闭 loading，避免一直转圈
+          setQuizLoading(false);
         }
+      } finally {
+        _generatingQuestion = false;
+        // 若 renderCurrentQuestion 已显示题目，loading 应隐藏；仅在仍有题目时确保隐藏
+        setQuizLoading(false);
       }
     }
 
