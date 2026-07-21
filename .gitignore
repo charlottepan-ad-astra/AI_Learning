@@ -6,4 +6,6 @@ api_key.py
 node_modules/
 package-lock.json
 .workbuddy/
-.workbuddy/memory
+.workbuddy\memory
+.workbuddy\memory\2026-07-21.md
+.workbuddy\memory\MEMORY.md
