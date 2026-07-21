@@ -301,6 +301,7 @@
     .badge.purple { background: #ede9fe; color: #5b21b6; }
     .badge.amber { background: #fef3c7; color: #92400e; }
     .badge.red { background: #fee2e2; color: #991b1b; }
+    .badge.teal { background: #ccfbf1; color: #134e4a; }
 
     .chat-card {
       display: grid;
@@ -578,6 +579,19 @@
       border-color: var(--brand);
       background: #eef2ff;
       box-shadow: 0 12px 28px rgba(91, 92, 246, 0.14);
+    }
+
+    /* Coach guidance options — conversational style, no scoring implied */
+    .option.guidance {
+      border: 1.5px dashed var(--brand);
+      background: #f0fdfa;
+      border-radius: 14px;
+    }
+    .option.guidance.selected {
+      border-style: solid;
+      background: #ccfbf1;
+      box-shadow: 0 8px 24px rgba(20, 184, 166, 0.18);
+      border-color: #14b8a6;
     }
 
     .feedback-hero {
@@ -883,8 +897,8 @@
           <!-- RIGHT SIDE (70%): Quiz Challenge -->
           <div class="workspace-right-stack">
             <div class="main" style="min-height: auto; padding: 30px; margin: 0;" id="quizContainer">
-              <span class="badge red">AI Generated Quiz</span>
-              <h2>Personalized practice</h2>
+              <span class="badge red" id="quizBadgeType">AI Generated Quiz</span>
+              <h2 id="quizSubtitle">Personalized practice</h2>
               <div id="quizPlaceholder" style="text-align: center; padding: 60px 20px;">
                 <div style="font-size: 4rem; margin-bottom: 20px;">📚</div>
                 <h3 style="margin-bottom: 16px;">No quiz yet</h3>
@@ -906,7 +920,7 @@
                   <button class="option" onclick="selectWorkspaceOption(this, 'C')"><span class="badge">C</span> Data cleaning</button>
                 </div>
                 
-                <button class="primary" style="margin-top:22px" onclick="submitWorkspaceQuiz()">Submit answer</button>
+                <button class="primary" style="margin-top:22px" id="workspaceSubmitBtn" onclick="submitWorkspaceQuiz()">Submit answer</button>
               </div>
             </div>
 
@@ -1019,13 +1033,13 @@
                 <p style="color:#e0f2fe">Based on your recent answers, your model accuracy intuition is improving, but probability and generalization are still weak links.</p>
                 <button class="secondary" onclick="goTo('workspace')">Start today’s mission</button>
               </div>
-              <div class="card" style="padding:22px; margin-top:18px">
+              <div class="card" style="padding:22px; margin-top:18px" id="learningProgressCard">
                 <h3>Learning Progress</h3>
-                <div class="progress" style="--value:46%"><span></span></div>
+                <div class="progress" style="--value:0%"><span></span></div>
                 <div class="metric-grid">
-                  <div class="metric"><b id="completionMetric">46%</b><span>Complete</span></div>
-                  <div class="metric"><b>7</b><span>Day streak</span></div>
-                  <div class="metric"><b>3</b><span>Weak areas</span></div>
+                  <div class="metric"><b id="completionMetric">0%</b><span>Complete</span></div>
+                  <div class="metric"><b id="dayStreakMetric">0</b><span>Day streak</span></div>
+                  <div class="metric"><b id="weakAreasMetric">0</b><span>Weak areas</span></div>
                 </div>
               </div>
             </div>
@@ -1074,7 +1088,7 @@
     const SUPABASE_KEY = "sb_publishable_1BUrdTe6CJG_NJ79OOBbPA_UdEepKAX";   // anon / publishable key
     let CURRENT_USER_ID = null; // 登录成功后自动填入
     let CURRENT_PLAN_ID = null; // 登录成功后自动查询/创建
-    const DEMO_SESSION_ID = crypto.randomUUID(); // 本次对话的会话ID，每次刷新页面会变
+    let DEMO_SESSION_ID = crypto.randomUUID(); // 本次对话的会话ID，每次刷新页面会变；切换账号时由 resetUserState() 重新生成
 
     const dbReady = Boolean(SUPABASE_URL && SUPABASE_KEY);
     let supabaseClient = null;
@@ -1136,6 +1150,39 @@
     let resources = []; // 初始为空，表示还没有推荐的学习资源
 
     /* ============================================================
+       切账号 / 登出时统一调用：把所有 in-memory 业务态恢复到"全新用户"的样子
+       —— 这是修"切换账号但旧数据残留"的核心函数。
+       调用方：
+         1) clearAuthState()    —— 登出后切回登录页之前
+         2) onAuthSuccess()     —— 登录成功后、init() 之前（双保险，兼容刷新页面场景）
+    ============================================================ */
+    function resetUserState() {
+      state.activePage = "landing";
+      state.selectedAnswer = null;
+      state.pathAdapted = false;
+      state.chatIndex = 0;
+      state.chatHistory = [
+        { sender: "ai", text: "Hi! I'll help you pick a learning goal and tailor your next practice question. Tell me what you want to learn today." }
+      ];
+      state.suggestedReplies = [
+        "Help me get started with a new skill",
+        "I'm looking for practice questions"
+      ];
+      state.learningGoal = "Not set yet";
+      state.coachStatus = "Waiting for your goal";
+      state.practiceQuestion = null;
+
+      currentQuestion = null;
+      learningNodes = [];
+      hasLearningGoal = false;
+      mistakes = [];
+      resources = [];
+
+      // 给新账号一个全新的 session id，避免把对话落到上一个账号的 session 里
+      try { DEMO_SESSION_ID = crypto.randomUUID(); } catch (e) { /* 旧浏览器没 crypto, 忽略 */ }
+    }
+
+    /* ============================================================
        数据库读取函数
        每个函数：查Supabase → 成功就覆盖对应的mock数组 → 失败就
        打印错误、保留原有mock数据兜底，不会让页面崩掉
@@ -1152,27 +1199,128 @@
     if (data) {
       const grouped = {};
       data.forEach(row => {
-        const domain = row.questions?.concepts?.domain || "其他";
+        // Skip orphaned rows that lost their question reference (defensive)
+        if (!row.questions) return;
+        const concept = row.questions.concepts || null;
+        const domain = concept?.domain || "其他";
+        const pointName = concept?.name || row.questions.conceptName || "General";
         if (!grouped[domain]) grouped[domain] = [];
         grouped[domain].push({
-          topic: row.questions?.concepts?.name || "",
-          question: row.questions?.title || "",
-          reason: row.questions?.explanation || "",
-          tag: row.questions?.concepts?.name || ""
+          topic: pointName,
+          question: row.questions.title || "",
+          reason: row.questions.explanation || "",
+          tag: pointName
         });
       });
       mistakes = Object.entries(grouped).map(([category, items]) => ({ category, items }));
+      } else {
+        // 防御性：万一没拿到数据，不要让旧账号的错题继续显示
+        mistakes = [];
       }
     }
+    // 计算并渲染顶部 "Learning Progress" 卡片（完成度 / 连续天数 / 薄弱点）。
+    // 之前这三个数字都是写死的静态占位，答题后不会变化。
+    async function fetchStats() {
+      if (!supabaseClient) return;
+
+      let pct = 0, weak = 0, dayStreak = 0;
+
+      try {
+        // 完成度 = 该用户 learning_progress 的平均 mastery
+        const { data: prog } = await supabaseClient
+          .from("learning_progress")
+          .select("mastery")
+          .eq("user_id", CURRENT_USER_ID);
+        pct = (prog && prog.length)
+          ? Math.round(prog.reduce((s, p) => s + (p.mastery || 0), 0) / prog.length)
+          : 0;
+      } catch (e) { console.error("统计-掌握度失败:", e); }
+
+      try {
+        // 薄弱点 = 未掌握(open)的错题数量
+        const { count } = await supabaseClient
+          .from("wrong_questions")
+          .select("*", { count: "exact", head: true })
+          .eq("user_id", CURRENT_USER_ID)
+          .eq("mastered", false);
+        weak = count || 0;
+      } catch (e) { console.error("统计-错题失败:", e); }
+
+      try {
+        // 连续学习天数
+        const { data: streak } = await supabaseClient
+          .from("user_streaks")
+          .select("current_streak")
+          .eq("user_id", CURRENT_USER_ID)
+          .maybeSingle();
+        dayStreak = streak?.current_streak || 0;
+      } catch (e) { console.error("统计-连续天数失败:", e); }
+
+      renderLearningProgress(pct, weak, dayStreak);
+    }
+
+    function renderLearningProgress(pct, weak, dayStreak) {
+      const completion = document.getElementById("completionMetric");
+      if (completion) completion.textContent = `${pct}%`;
+      const bar = document.getElementById("learningProgressCard")?.querySelector(".progress");
+      if (bar) bar.style.setProperty("--value", `${pct}%`);
+      const weakEl = document.getElementById("weakAreasMetric");
+      if (weakEl) weakEl.textContent = weak;
+      const streakEl = document.getElementById("dayStreakMetric");
+      if (streakEl) streakEl.textContent = dayStreak;
+    }
+
+    // 每次完成真实答题后更新连续学习天数（streak）。
+    async function updateStreak() {
+      if (!supabaseClient) return 0;
+      try {
+        const today = new Date().toISOString().slice(0, 10);
+        const { data: existing } = await supabaseClient
+          .from("user_streaks")
+          .select("current_streak, longest_streak, last_active_date")
+          .eq("user_id", CURRENT_USER_ID)
+          .maybeSingle();
+
+        let newStreak = 1;
+        let longest = existing?.longest_streak || 0;
+        if (existing) {
+          const last = existing.last_active_date;
+          if (last === today) {
+            newStreak = existing.current_streak || 1;        // 今天已经计入
+          } else {
+            const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+            newStreak = (last === yesterday) ? (existing.current_streak || 0) + 1 : 1;
+          }
+        }
+        longest = Math.max(longest, newStreak);
+
+        await supabaseClient.from("user_streaks").upsert({
+          user_id: CURRENT_USER_ID,
+          current_streak: newStreak,
+          longest_streak: longest,
+          last_active_date: today
+        });
+        return newStreak;
+      } catch (err) {
+        console.error("更新连续学习天数失败:", err);
+        return 0;
+      }
+    }
+
     async function fetchLearningMap() {
-      if (!supabaseClient || !CURRENT_PLAN_ID) return;
+      if (!supabaseClient || !CURRENT_PLAN_ID) {
+        // 没有 plan 时显式清空 + 把"已确定目标"标记重置，避免渲染旧地图
+        learningNodes = [];
+        hasLearningGoal = false;
+        return;
+      }
 
       const { data: planConcepts, error: e1 } = await supabaseClient
         .from("learning_plan_concepts")
         .select("concept_id, sequence_order, concepts ( id, name, description )")
         .eq("learning_plan_id", CURRENT_PLAN_ID)
         .order("sequence_order");
-        
+
       if (e1) { console.error("加载学习地图失败:", e1); return; }
 
       // 核心修改：多查一个 mastery (分数) 字段
@@ -1180,7 +1328,7 @@
         .from("learning_progress")
         .select("concept_id, status, mastery")
         .eq("user_id", CURRENT_USER_ID);
-        
+
       if (e2) { console.error("加载掌握度失败:", e2); return; }
 
       // 整理每个 concept 的进度与分数
@@ -1193,7 +1341,7 @@
 
         learningNodes = planConcepts.map((pc, index) => {
           const prog = progressMap[pc.concept_id] || { status: "Not Started", mastery: 0 };
-          
+
           // 传入 status 和 mastery 双重判断
           let uiStatus = mapStatusToUI(prog.status, prog.mastery);
 
@@ -1212,6 +1360,11 @@
             description: `${pc.concepts?.description || ''} (Mastery: ${prog.mastery}%)`
           };
         });
+        hasLearningGoal = true; // 有真实计划时，才算"已确定目标"
+      } else {
+        // 新账号 / 还没有 plan concepts：清空 + 标记"未确定"
+        learningNodes = [];
+        hasLearningGoal = false;
       }
     }
     
@@ -1230,6 +1383,9 @@
           reason: r.description || "",
           time: "" // 数据库目前没有存时长字段，先留空；需要的话可以在resources表里加一列
         }));
+      } else {
+        // 防御性：没数据时清空，避免上一个账号的资源列表残留
+        resources = [];
       }
     }
 
@@ -1244,6 +1400,17 @@
 
       if (data && data.length) {
         state.chatHistory = data.map(m => ({ sender: m.role === "assistant" ? "ai" : "user", text: m.content }));
+      } else {
+        // 新账号 / 没有历史对话：重置回"打招呼"的初始状态，不要让旧账号的对话继续显示
+        state.chatHistory = [
+          { sender: "ai", text: "Hi! I'll help you pick a learning goal and tailor your next practice question. Tell me what you want to learn today." }
+        ];
+        state.suggestedReplies = [
+          "Help me get started with a new skill",
+          "I'm looking for practice questions"
+        ];
+        state.learningGoal = "Not set yet";
+        state.coachStatus = "Waiting for your goal";
       }
     }
 
@@ -1270,6 +1437,13 @@
     }
 
     async function loadNextQuestion() {
+      // 防御：用户还没和 AI 聊出 goal 时，不要从 DB 抽题 —— quiz 区保持空态
+      if (state.learningGoal === "Not set yet") {
+        currentQuestion = null;
+        renderCurrentQuestion();
+        return;
+      }
+
       if (state.practiceQuestion && state.practiceQuestion.generatedByCoach) {
         currentQuestion = state.practiceQuestion;
         renderCurrentQuestion();
@@ -1279,7 +1453,7 @@
       if (!supabaseClient || !CURRENT_PLAN_ID) return;
 
       const conceptId = await pickActiveConcept();
-      if (!conceptId) { currentQuestion = null; return; }
+      if (!conceptId) { currentQuestion = null; renderCurrentQuestion(); return; }
 
       const { data: concept } = await supabaseClient
         .from("concepts")
@@ -1298,7 +1472,7 @@
       const source = pool.length ? pool : qs;
       const picked = source[Math.floor(Math.random() * source.length)];
 
-      currentQuestion = { ...picked, conceptName: concept?.name || "" };
+      currentQuestion = { ...picked, conceptName: concept?.name || "", questionType: "quiz" };
       renderCurrentQuestion();
     }
 
@@ -1324,12 +1498,29 @@
         : JSON.parse(currentQuestion.options || "[]");
       const letters = ["A", "B", "C", "D", "E"];
 
+      const isGuidance = currentQuestion.questionType === "coach_guidance";
+
+      // Badge & subtitle
+      const badgeEl = document.getElementById("quizBadgeType");
+      const subtitleEl = document.getElementById("quizSubtitle");
+      const submitBtn = document.getElementById("workspaceSubmitBtn");
+      if (badgeEl) {
+        badgeEl.textContent = isGuidance ? "Learning Guide" : "AI Generated Quiz";
+        badgeEl.className = isGuidance ? "badge teal" : "badge red";
+      }
+      if (subtitleEl) {
+        subtitleEl.textContent = isGuidance ? "Choose your learning path" : "Personalized practice";
+      }
+      if (submitBtn) {
+        submitBtn.textContent = isGuidance ? "Confirm your choice" : "Submit answer";
+      }
+
       document.getElementById("workspaceQuizDifficulty").textContent = `Difficulty: ${currentQuestion.difficulty || "Medium"}`;
       document.getElementById("workspaceQuizKP").textContent = `Knowledge point: ${currentQuestion.conceptName}`;
       document.getElementById("workspaceQuizPrompt").textContent = currentQuestion.title;
 
       document.getElementById("workspaceOptionsContainer").innerHTML = options.map((opt, i) => `
-        <button class="option" onclick="selectWorkspaceOption(this, ${i})"><span class="badge">${letters[i]}</span> ${opt}</button>
+        <button class="option${isGuidance ? ' guidance' : ''}" onclick="selectWorkspaceOption(this, ${i})"><span class="badge">${letters[i]}</span> ${opt}</button>
       `).join("");
 
       document.getElementById("workspaceFeedbackCollapse").classList.remove("expanded");
@@ -1354,11 +1545,13 @@
       }
       try {
         await Promise.all([
+          fetchPlanMeta(),     // 拉 plan 的 subject/goal，灌到 state.learningGoal
           fetchLearningMap(),
           fetchMistakes(),
           fetchResources(),
           fetchChatHistory(),
-          loadNextQuestion()
+          loadNextQuestion(),
+          fetchStats()         // 顶部 Learning Progress 卡片
         ]);
       } catch (err) {
         console.error("从数据库加载数据时出现异常，继续使用示例数据兜底:", err);
@@ -1463,9 +1656,106 @@
       }
     }
 
-    // 查这个用户名下有没有"进行中"的学习计划；有就用最新的一条，
-    // 没有就自动建一条默认的demo计划，让用户登录后马上能用，
-    // 不用等"创建学习计划"的完整onboarding页面做完
+    /* ============================================================
+       新流程：chat-first 学习计划
+       - 新用户注册时只创建一个空的 plan（不挂任何 concept）
+       - 用户和 AI 聊完、推断了 topic 之后，再去 DB 找对应概念挂上
+       - 这样：未聊天的账号永远看不到 quiz / learning map，UI 保持"先去和 Sherpa 聊"的空态
+    ============================================================ */
+    function topicToConceptKeys(topic, goalText) {
+      const t = (topic || "").toLowerCase();
+      const g = (goalText || "").toLowerCase();
+      if (t === "python" || g.includes("python")) return ["python_basics"];
+      if (t === "statistics" || g.includes("statistics") || g.includes("probability")) return ["statistics"];
+      if (t === "machine learning" || t === "ml" || /\bml\b/.test(g) || g.includes("machine learning") || g.includes("deep learning") || g.includes("neural")) return ["ml_fundamentals", "neural_networks"];
+      if (t === "sql" || g.includes("sql") || g.includes("database")) return ["sql_basics"];
+      if (t === "javascript" || g.includes("frontend") || g.includes("javascript") || g.includes("js ")) return ["javascript_basics"];
+      // 兜底：给一个通用入门概念
+      return ["ml_fundamentals"];
+    }
+
+    async function attachConceptsForTopic(planId, topic, goalText) {
+      if (!supabaseClient || !planId) return [];
+      const keys = topicToConceptKeys(topic, goalText);
+      if (!keys.length) return [];
+
+      const { data: concepts, error } = await supabaseClient
+        .from("concepts")
+        .select("id, concept_key")
+        .in("concept_key", keys);
+      if (error) { console.error("查概念失败:", error); return []; }
+      if (!concepts || !concepts.length) {
+        console.log("DB 里没找到 concept_key =", keys, "（可能种子数据还没执行，跳过挂载）");
+        return [];
+      }
+
+      // 已经挂过的跳过（幂等），并算出下一个 sequence_order
+      const { data: existing } = await supabaseClient
+        .from("learning_plan_concepts")
+        .select("concept_id, sequence_order")
+        .eq("learning_plan_id", planId);
+      const existingIds = new Set((existing || []).map(e => e.concept_id));
+      const maxOrder = (existing || []).reduce((m, e) => Math.max(m, e.sequence_order || 0), -1);
+
+      const newRows = concepts
+        .filter(c => !existingIds.has(c.id))
+        .map((c, i) => ({
+          learning_plan_id: planId,
+          concept_id: c.id,
+          sequence_order: maxOrder + 1 + i
+        }));
+
+      if (newRows.length) {
+        const { error: insertErr } = await supabaseClient
+          .from("learning_plan_concepts")
+          .insert(newRows);
+        if (insertErr) console.error("挂载概念到 plan 失败:", insertErr);
+      }
+      return concepts.map(c => c.id);
+    }
+
+    // 聊天后调用：把推断出来的 goal/subject 写回 plan + 挂上对应的概念。
+    // 这是 fire-and-forget，UI 已经立刻给了反馈（AI-driven 的 map + practice question），
+    // DB 这次只是补登记，让用户下次刷新或在 learning map 页面看到的依然是他的目标。
+    async function persistInferredGoal(inferred) {
+      if (!supabaseClient || !CURRENT_PLAN_ID || !inferred) return;
+      try {
+        await supabaseClient
+          .from("learning_plans")
+          .update({ subject: inferred.topic, goal: inferred.goal })
+          .eq("id", CURRENT_PLAN_ID);
+        await attachConceptsForTopic(CURRENT_PLAN_ID, inferred.topic, inferred.goal);
+        // 从 DB 重新拉一遍，让 learning map / quiz 的渲染与持久化保持一致
+        await fetchLearningMap();
+        renderLearningMap();
+        await loadNextQuestion(); // 会被 practiceQuestion 早返回，不影响当前显示
+      } catch (err) {
+        console.error("persistInferredGoal 失败:", err);
+      }
+    }
+
+    // 加载时拉取 plan 的 subject/goal，灌到 state 里
+    // —— 没设置过目标的用户，goal 为空，state 保持 "Not set yet"
+    // —— 已经聊过的用户，刷新也能看到自己之前的目标
+    async function fetchPlanMeta() {
+      if (!supabaseClient || !CURRENT_PLAN_ID) return;
+      const { data, error } = await supabaseClient
+        .from("learning_plans")
+        .select("subject, goal")
+        .eq("id", CURRENT_PLAN_ID)
+        .maybeSingle();
+      if (error || !data) return;
+      if (data.goal && String(data.goal).trim()) {
+        state.learningGoal = data.goal;
+        state.coachStatus = data.subject ? `Learning: ${data.subject}` : "Personalized path active";
+      }
+      // goal 为空时保持 state.learningGoal = "Not set yet"，不强行覆盖
+    }
+
+    // 查这个用户名下有没有"进行中"的学习计划；有就用最新的一条。
+    // 没有就建一条**空的** plan（subject/goal 都为 null，不挂任何 concept）——
+    // 这是 chat-first 流程：先让用户和 AI 聊出兴趣，再生成专属内容。
+    // 老的 attachDemoConceptsToPlan 已废弃，保留仅作参考，新账号不再调用。
     async function getOrCreateActivePlan(userId) {
       const { data: existing, error: findErr } = await supabaseClient
         .from("learning_plans")
@@ -1486,8 +1776,8 @@
         .from("learning_plans")
         .insert({
           user_id: userId,
-          subject: "Machine Learning Fundamentals",
-          goal: "Build a working understanding of core ML concepts",
+          subject: null,   // 用户和 AI 聊完才填
+          goal: null,      // 同上
           level: "Beginner",
           status: "Active"
         })
@@ -1499,11 +1789,14 @@
         return null;
       }
 
-      await attachDemoConceptsToPlan(created.id);
+      // 关键修复：新账号的 plan 是空的，不预挂任何 concept。
+      // 等用户聊天后由 persistInferredGoal() 按 topic 挂载。
       return created.id;
     }
 
     async function onAuthSuccess(user) {
+      // 双保险：万一是从刷新页面直接登录（没经过 clearAuthState），也确保状态是干净的
+      resetUserState();
       CURRENT_USER_ID = user.id;
       try { await ensureProfile(user.id); } catch (err) { console.error("创建profile失败:", err); }
       try { CURRENT_PLAN_ID = await getOrCreateActivePlan(user.id); } catch (err) { console.error("获取/创建学习计划失败:", err); }
@@ -1515,6 +1808,9 @@
     function clearAuthState() {
       CURRENT_USER_ID = null;
       CURRENT_PLAN_ID = null;
+      // 关键修复：登出时把所有内存态重置回"全新用户"的样子，
+      // 防止下一个登录的账号看到上一位的对话 / 学习地图 / 错题。
+      resetUserState();
       document.getElementById("appShell").style.display = "none";
       document.getElementById("authScreen").style.display = "flex";
       document.getElementById("authEmail").value = "";
@@ -1625,6 +1921,8 @@
       let difficulty = "Medium";
       let conceptName = inferred.topic;
 
+      let questionType = "quiz";
+
       if (goalLower.includes("python")) {
         question = "Which Python loop is best for iterating over a list and summing values efficiently?";
         options = ["for ... in range", "while", "if/else", "try/except"];
@@ -1654,11 +1952,14 @@
         conceptName = "SQL filtering";
         difficulty = "Easy";
       } else {
+        // Coach guidance question — no right/wrong answer, purely conversational
         question = `Which action would best help you practice ${inferred.topic.toLowerCase()} today?`;
         options = ["Review core concepts", "Try a worked example", "Test yourself with a mini challenge", "Ask for a deeper explanation"];
-        answer = "C";
-        explanation = "Active practice is the fastest way to turn a new goal into usable understanding.";
+        answer = null;
+        explanation = null;
         conceptName = inferred.topic;
+        difficulty = "Medium";
+        questionType = "coach_guidance";
       }
 
       return {
@@ -1668,8 +1969,10 @@
         explanation,
         difficulty,
         conceptName,
+        topic: inferred ? inferred.topic : conceptName,
         concept_id: null,
-        generatedByCoach: true
+        generatedByCoach: true,
+        questionType
       };
     }
 
@@ -1735,18 +2038,26 @@
       state.coachStatus = `Tailoring practice around ${inferred.topic.toLowerCase()}`;
       state.practiceQuestion = buildCoachPracticeQuestion(inferred.goal, text);
       currentQuestion = state.practiceQuestion;
-      
+
       // 生成动态学习地图
       hasLearningGoal = true;
       learningNodes = generateLearningMap(inferred);
       renderLearningMap(); // 更新学习地图显示
-      
+
       state.suggestedReplies = [
         `Practice ${inferred.topic} with me`,
         `Make the next question harder`,
         `Explain the reasoning behind the answer`
       ];
       renderCurrentQuestion();
+
+      // 把"用户想学什么"持久化到 DB（fire-and-forget，不阻塞 UI）：
+      //   1) 更新 plan 的 subject/goal
+      //   2) 按 topic 挂载对应的 concept
+      //   3) 触发一次 fetchLearningMap，让 learning map 页面切过去时也是最新的
+      // 如果数据库没接，函数会早返回，UI 不受影响。
+      persistInferredGoal(inferred);
+
       return inferred;
     }
 
@@ -1945,10 +2256,88 @@
       document.getElementById("workspaceFeedbackCollapse").classList.add("expanded");
     }
 
+    // Coach-generated questions are created in JS and have no DB id.
+    // Before writing attempts/wrong_questions we persist them to the `questions`
+    // table (idempotent by title) so they get a real id + concept_id and can be
+    // tracked correctly in the mistake book. DB-loaded questions already have an id.
+    async function ensureQuestionPersisted(q) {
+      if (q && q.id) return q.id;            // already a real DB question
+      if (!supabaseClient || !q) return null;
+
+      try {
+        // Reuse an identical question if it was persisted before (avoids duplicates)
+        const { data: existing } = await supabaseClient
+          .from("questions")
+          .select("id, concept_id")
+          .eq("user_id", CURRENT_USER_ID)
+          .eq("title", q.title)
+          .maybeSingle();
+        if (existing) {
+          q.id = existing.id;
+          if (existing.concept_id) q.concept_id = existing.concept_id;
+          return existing.id;
+        }
+
+        // Resolve a concept id from the question's topic / concept name
+        let conceptId = null;
+        const topic = q.topic || q.conceptName || "";
+        if (topic) {
+          const { data: byName } = await supabaseClient
+            .from("concepts")
+            .select("id")
+            .eq("name", topic)
+            .maybeSingle();
+          if (byName) {
+            conceptId = byName.id;
+          } else {
+            const keys = topicToConceptKeys(topic, "");
+            if (keys.length) {
+              const { data: byKey } = await supabaseClient
+                .from("concepts")
+                .select("id")
+                .in("concept_key", keys)
+                .limit(1)
+                .maybeSingle();
+              if (byKey) conceptId = byKey.id;
+            }
+          }
+        }
+
+        const options = Array.isArray(q.options) ? q.options : JSON.parse(q.options || "[]");
+        const { data: inserted, error } = await supabaseClient
+          .from("questions")
+          .insert({
+            user_id: CURRENT_USER_ID,
+            concept_id: conceptId,
+            title: q.title,
+            question_type: "单选",
+            difficulty: q.difficulty || "Medium",
+            options: options,
+            answer: q.answer || "",
+            explanation: q.explanation || "",
+            generated_by: "Sherpa"
+          })
+          .select("id, concept_id")
+          .single();
+        if (error) throw error;
+        q.id = inserted.id;
+        if (inserted.concept_id) q.concept_id = inserted.concept_id;
+        return inserted.id;
+      } catch (err) {
+        console.error("持久化 coach 题目失败:", err);
+        return null;
+      }
+    }
+
     async function submitWorkspaceQuiz() {
       if (!state.selectedAnswer) {
         alert("Choose an answer first so Sherpa can analyze it.");
         return;
+      }
+
+      // ── Coach guidance question: route through conversation, skip DB scoring ──
+      if (currentQuestion && currentQuestion.questionType === "coach_guidance") {
+        return submitCoachGuidance();
       }
 
       // 数据库未连接，或没有加载到真实题目：走原来的静态demo效果，不写数据库
@@ -1958,11 +2347,27 @@
 
       const correct = state.selectedAnswer === currentQuestion.answer;
 
+      // Coach-generated questions have no DB id yet — persist first so they get a
+      // real id + concept_id and can be tracked correctly in the mistake book.
+      const qId = await ensureQuestionPersisted(currentQuestion);
+      if (!qId) {
+        // Could not persist (e.g. DB issue) — still give feedback without writing.
+        renderQuizFeedback(correct, { mastery: 0 });
+        const aiSummary = correct
+          ? `Nice work on ${currentQuestion.conceptName}.`
+          : `Not quite — I've noted this gap in ${currentQuestion.conceptName}.`;
+        state.chatHistory.push({ sender: "user", text: `Submitted answer: ${state.selectedAnswer}` });
+        state.chatHistory.push({ sender: "ai", text: aiSummary });
+        renderWorkspaceCoach();
+        showToastNotification(correct ? "Correct" : "Saved");
+        return;
+      }
+
       try {
         const { data: attempt, error: attemptErr } = await supabaseClient
           .from("attempts")
           .insert({
-            question_id: currentQuestion.id,
+            question_id: qId,
             user_id: CURRENT_USER_ID,
             user_answer: state.selectedAnswer,
             is_correct: correct,
@@ -1975,14 +2380,14 @@
         await supabaseClient.from("learning_evidence").insert({
           user_id: CURRENT_USER_ID,
           concept_id: currentQuestion.concept_id,
-          question_id: currentQuestion.id,
+          question_id: qId,
           attempt_id: attempt.id,
           result: correct ? "correct" : "incorrect",
           evidence_dimension: "application",
           notes: currentQuestion.explanation
         });
 
-        await updateWrongQuestion(currentQuestion.id, correct);
+        await updateWrongQuestion(qId, correct);
         const progress = await updateLearningProgress(currentQuestion.concept_id, correct);
 
         renderQuizFeedback(correct, progress);
@@ -1990,6 +2395,8 @@
         renderLearningMap();
         await fetchMistakes();
         renderMistakes();
+        await updateStreak();   // 完成一次真实答题即算活跃，更新连续学习天数
+        await fetchStats();     // 同步刷新顶部 Learning Progress 卡片
 
         const summaryText = `Submitted answer: ${state.selectedAnswer}`;
         const aiSummary = correct
@@ -2008,8 +2415,76 @@
       }
     }
 
+    // Coach guidance submission — conversational, no right/wrong, no DB writes
+    async function submitCoachGuidance() {
+      const options = Array.isArray(currentQuestion.options)
+        ? currentQuestion.options
+        : JSON.parse(currentQuestion.options || "[]");
+      const choiceText = options[state.selectedAnswer] || `Option ${state.selectedAnswer}`;
+      const topic = currentQuestion.conceptName || "this topic";
+
+      // Build conversational AI response based on user's choice
+      const responses = {
+        "Review core concepts": `Great idea! Let's review the fundamentals of ${topic} together. Here's a quick summary of the key concepts you should know... Why don't we start with a basic question to warm up?`,
+        "Try a worked example": `Perfect — worked examples are one of the most effective ways to learn! Let me walk you through a detailed example on ${topic}. Once you're comfortable, we'll try a similar problem for you to solve.`,
+        "Test yourself with a mini challenge": `Love the proactive approach! Let me pull together a quick challenge on ${topic} for you right now. Ready?`,
+        "Ask for a deeper explanation": `Of course! Deep understanding beats memorization every time. Let me break down ${topic} in more detail — here's what you need to know at a foundational level before we dive into practice...`
+      };
+      const aiReply = responses[choiceText] || `Thanks for sharing your preference! Let me tailor the ${topic} content to match your learning style — starting with a question that suits your approach.`;
+
+      // Add to chat history
+      state.chatHistory.push({ sender: "user", text: `I'd like to: ${choiceText}` });
+      state.chatHistory.push({ sender: "ai", text: aiReply });
+      renderWorkspaceCoach();
+
+      if (supabaseClient) {
+        saveChatMessage("user", `I'd like to: ${choiceText}`);
+        saveChatMessage("assistant", aiReply);
+      }
+
+      showToastNotification("Learning path updated based on your choice");
+
+      // Clear the used guidance question and load a real quiz
+      state.practiceQuestion = null;
+      currentQuestion = null;
+      setTimeout(async () => {
+        await loadNextQuestion();
+        renderCurrentQuestion();
+      }, 500);
+    }
+
     // 数据库未配置时的静态demo效果，保持和原来一样，方便没连库也能预览界面
     function submitWorkspaceQuizFallback() {
+      // ── Coach guidance fallback: conversational, no scoring ──
+      if (currentQuestion && currentQuestion.questionType === "coach_guidance") {
+        const options = Array.isArray(currentQuestion.options)
+          ? currentQuestion.options
+          : JSON.parse(currentQuestion.options || "[]");
+        const choiceText = options[state.selectedAnswer] || `Option ${state.selectedAnswer}`;
+        const topic = currentQuestion.conceptName || "this topic";
+
+        const responses = {
+          "Review core concepts": `Great idea! Let's review the fundamentals of ${topic} together. Here's a quick summary of the key concepts... We'll start with a warm-up question next.`,
+          "Try a worked example": `Perfect — worked examples are one of the most effective ways to learn! Let me walk you through a detailed example on ${topic}.`,
+          "Test yourself with a mini challenge": `Love the proactive approach! Let me set up a mini challenge on ${topic} for you.`,
+          "Ask for a deeper explanation": `Of course! Let me break down ${topic} in more detail so you build a solid foundation.`
+        };
+        const aiReply = responses[choiceText] || `Thanks! Let me tailor the ${topic} content to match your learning style.`;
+
+        state.chatHistory.push({ sender: "user", text: `I'd like to: ${choiceText}` });
+        state.chatHistory.push({ sender: "ai", text: aiReply });
+        renderWorkspaceCoach();
+        showToastNotification("Learning path updated based on your choice");
+
+        // Clear the used guidance question
+        state.practiceQuestion = null;
+        currentQuestion = null;
+        setTimeout(() => {
+          renderCurrentQuestion();  // will show placeholder until a new question is available
+        }, 500);
+        return;
+      }
+
       const correct = state.selectedAnswer === "B";
       const resultCard = document.getElementById("workspaceResultCard");
       resultCard.classList.toggle("incorrect", !correct);

@@ -1,42 +1,32 @@
-// server.js — 安全代理后端
-require('dotenv').config();
+# Sherpa — System Prompt (Optimized v2)
 
-const express = require('express');
-const cors = require('cors');
-const { OpenAI } = require('openai');
+> This is the system prompt used by the Sherpa AI chat endpoint (`/api/chat`).
+> It is injected as a `system` message before the user's first turn and remains constant for the session.
+> The actual code that injects it lives in `server.js/server.js` (the `/api/chat` route).
 
-const app = express();
-app.use(cors());
-app.use(express.json());
+---
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-  baseURL: process.env.OPENAI_BASE_URL || "https://api.siliconflow.cn/v1"
-});
+## What's new in v2 (vs. v1)
 
-app.get('/', (_req, res) => {
-  res.json({
-    status: 'ok',
-    message: 'Sherpa AI backend is running.',
-    endpoints: ['/health', '/api/chat', '/api/ai-feedback']
-  });
-});
+| Area                  | v1                                | v2                                                                  |
+|---|---|---|
+| **Persona**           | Generic "Ultimate Learning Strategist" | Sherpa = mountain guide. "Walk alongside, not ahead. Carry the map; the climber does the climbing." |
+| **Modules**           | 5                                 | 5 + 1 new: **Module 6 — Session Awareness & Edge Cases** (off-topic, looping, plateau, platform tools) |
+| **DDA table**         | 3 IF-branches                     | 4-row signal table incl. a new **Deepening Mode** for confident users who want depth |
+| **Metacognition**     | One line                          | Three tactics: explain-why, name-the-move, teach-the-meta-pattern   |
+| **Retention**         | Socratic question only            | + **Spaced Re-trigger** to recall prior context on revisits          |
+| **Response format**   | None                              | Explicit 4-part template (Diagnose / Substance / Why / Next Step) + length budget (150–400 words) |
+| **Initialization**    | 2 questions                       | 2 questions + 1 optional time-budget question (10/30/60+ min)        |
+| **Language rule**     | 3 bullets                         | 4 bullets + explicit "technical terms may stay in original form" carve-out |
+| **Session memory**    | None                              | "Treat all earlier turns as your memory of this learner"             |
+| **Platform integration** | None                           | Module 6 weaves in Learning Map / Error Book / Quiz at most once per session |
 
-// 接口 1：AI Coach 智能对话响应
-app.post('/api/chat', async (req, res) => {
-  const { userMessage, learningGoal } = req.body;
+---
 
-  if (!process.env.OPENAI_API_KEY) {
-    return res.status(500).json({ reply: "服务端尚未配置 OPENAI_API_KEY，请先设置环境变量后再试。" });
-  }
+## Full Prompt (as injected)
 
-  try {
-    const completion = await openai.chat.completions.create({
-      model: process.env.OPENAI_MODEL || "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
-      messages: [
-        {
-          role: "system",
-          content: `You are **Sherpa**, the user's personal mountain guide on the journey of mastering any subject — from "Novice" to "Master."
+\`\`\`text
+You are **Sherpa**, the user's personal mountain guide on the journey of mastering any subject — from "Novice" to "Master."
 You walk alongside them, not ahead. You carry the map and compass; the climber does the climbing.
 Your mission: architect a personalized learning journey in ANY subject, adapting dynamically to their level, emotion, and goal.
 
@@ -155,63 +145,15 @@ You MUST respond in the **exact same language** the user writes in. No code-swit
 ---
 
 ### **SESSION CONTEXT (injected by the platform)**
-- Current learning goal: ${learningGoal || 'Not yet set — infer from conversation or ask via Module 6.'}
+- Current learning goal: \${learningGoal || 'Not yet set — infer from conversation or ask via Module 6.'}
 - Treat all earlier turns in this conversation as your memory of this learner. Reference them naturally; never pretend the chat just started.
-`
-        },
-        { role: "user", content: userMessage }
-      ],
-      temperature: 0.7,
-      max_tokens: 1000
-    });
+\`\`\`
 
-    res.json({ reply: completion.choices[0].message.content });
-  } catch (error) {
-    console.error("Chat API error:", error.message);
-    res.status(500).json({ reply: "我暂时无法连接到 AI 服务，请稍后再试。" });
-  }
-});
+---
 
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok' });
-});
+## How to update the prompt
 
-// 接口 2：错题诊断点评
-app.post('/api/ai-feedback', async (req, res) => {
-  const { questionTitle, userAnswer, correctAnswer, explanation } = req.body;
-
-  try {
-    const prompt = `Student answered INCORRECTLY.
-Question: "${questionTitle}"
-Selected Answer: "${userAnswer}"
-Correct Answer: "${correctAnswer}"
-Base Explanation: "${explanation}"
-
-Provide a 2-sentence empathetic diagnosis explaining why their specific choice was wrong and how to fix their thinking.`;
-
-    const completion = await openai.chat.completions.create({
-      model: process.env.OPENAI_MODEL || "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
-      messages: [
-        { role: "system", content: `You are an empathetic learning coach providing quick diagnostic insights. 
-
-CRITICAL INSTRUCTION: YOU MUST RESPOND IN THE EXACT SAME LANGUAGE THAT IS USED IN THE QUESTION AND PROMPT.
-- If the question is in English, respond ONLY in English.
-- If the question is in Chinese, respond ONLY in Chinese.
-- Do NOT mix languages under any circumstances.` },
-        { role: "user", content: prompt }
-      ],
-      temperature: 0.7,
-      max_tokens: 120
-    });
-
-    res.json({ feedback: completion.choices[0].message.content });
-  } catch (error) {
-    console.error("Feedback API error:", error.message);
-    res.status(500).json({ error: "API Failed" });
-  }
-});
-
-const PORT = 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 Sherpa AI Proxy running on http://localhost:${PORT}`);
-});
+1. Edit the full prompt above for documentation.
+2. Mirror the change into the template literal in `server.js/server.js` inside `app.post('/api/chat', ...)`.
+3. Keep the `${learningGoal}` interpolation as-is — the platform passes it in at request time.
+4. Bump the version note at the top of this file.
