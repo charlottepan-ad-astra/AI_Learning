@@ -9,3 +9,5 @@ package-lock.json
 .workbuddy\memory\MEMORY.md
 .workbuddy
 server.log
+server_err.log
+server_out.log

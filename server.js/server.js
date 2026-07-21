@@ -18,7 +18,7 @@ app.get('/', (_req, res) => {
   res.json({
     status: 'ok',
     message: 'Sherpa AI backend is running.',
-    endpoints: ['/health', '/api/chat', '/api/ai-feedback', '/api/generate-roadmap', '/api/generate-question', '/api/evaluate-learning-activity', '/api/extract-goal', '/api/extract-learner-profile', '/api/grade-answer']
+    endpoints: ['/health', '/api/chat', '/api/ai-feedback', '/api/generate-roadmap', '/api/generate-question', '/api/generate-resource-recommendations', '/api/evaluate-learning-activity', '/api/extract-goal', '/api/extract-learner-profile', '/api/grade-answer']
   });
 });
 
@@ -57,11 +57,24 @@ function extractJsonObject(content) {
   const start = raw.indexOf('{');
   const end = raw.lastIndexOf('}');
   if (start !== -1 && end !== -1 && end > start) raw = raw.slice(start, end + 1);
-  return JSON.parse(raw);
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    return null;
+  }
 }
 
 function cleanProfileText(value, maxLength = 240) {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
+}
+
+function emptyLearnerProfileResponse() {
+  return {
+    profile: {},
+    strategy: {},
+    missing_fields: ['learning_goal', 'current_level', 'motivation', 'preferred_learning_style', 'available_study_time_minutes', 'target_outcome'],
+    ready: false
+  };
 }
 
 function roadmapKey(topic, name, index) {
@@ -153,20 +166,75 @@ function fallbackAdaptiveDecision(input) {
 function normalizeAdaptiveDecision(raw, input) {
   const fallback = fallbackAdaptiveDecision(input);
   const roadmapKeys = new Set((Array.isArray(input.roadmap) ? input.roadmap : []).map(c => c.concept_key));
-  const diagnosis = raw && raw.diagnosis && typeof raw.diagnosis === 'object' ? raw.diagnosis : {};
+  // A model response can be absent or fail JSON extraction. Normalize from an
+  // object before inspecting individual fields so the fallback remains usable.
+  const decision = raw && typeof raw === 'object' ? raw : {};
+  const diagnosis = decision.diagnosis && typeof decision.diagnosis === 'object' ? decision.diagnosis : {};
   return {
-    updated_mastery: Number.isFinite(Number(raw && raw.updated_mastery)) ? Math.round(clamp(Number(raw.updated_mastery), 0, 100)) : fallback.updated_mastery,
-    evidence_dimension: ['recognition', 'recall', 'explanation', 'application'].includes(raw && raw.evidence_dimension) ? raw.evidence_dimension : fallback.evidence_dimension,
+    updated_mastery: Number.isFinite(Number(decision.updated_mastery)) ? Math.round(clamp(Number(decision.updated_mastery), 0, 100)) : fallback.updated_mastery,
+    evidence_dimension: ['recognition', 'recall', 'explanation', 'application'].includes(decision.evidence_dimension) ? decision.evidence_dimension : fallback.evidence_dimension,
     diagnosis: {
       category: cleanProfileText(diagnosis.category, 80) || fallback.diagnosis.category,
       summary: cleanProfileText(diagnosis.summary, 500) || fallback.diagnosis.summary,
       intervention: cleanProfileText(diagnosis.intervention, 500) || fallback.diagnosis.intervention
     },
-    next_concept_key: roadmapKeys.has(raw && raw.next_concept_key) ? raw.next_concept_key : fallback.next_concept_key,
-    next_quiz_difficulty: ['Easy', 'Medium', 'Hard'].includes(raw && raw.next_quiz_difficulty) ? raw.next_quiz_difficulty : fallback.next_quiz_difficulty,
-    recommended_question_type: ['multiple_choice', 'fill_blank', 'short_answer'].includes(raw && raw.recommended_question_type) ? raw.recommended_question_type : fallback.recommended_question_type,
-    review_after_hours: Number.isFinite(Number(raw && raw.review_after_hours)) ? Math.round(clamp(Number(raw.review_after_hours), 1, 24 * 90)) : fallback.review_after_hours
+    next_concept_key: roadmapKeys.has(decision.next_concept_key) ? decision.next_concept_key : fallback.next_concept_key,
+    next_quiz_difficulty: ['Easy', 'Medium', 'Hard'].includes(decision.next_quiz_difficulty) ? decision.next_quiz_difficulty : fallback.next_quiz_difficulty,
+    recommended_question_type: ['multiple_choice', 'fill_blank', 'short_answer'].includes(decision.recommended_question_type) ? decision.recommended_question_type : fallback.recommended_question_type,
+    review_after_hours: Number.isFinite(Number(decision.review_after_hours)) ? Math.round(clamp(Number(decision.review_after_hours), 1, 24 * 90)) : fallback.review_after_hours
   };
+}
+
+function recommendationReferenceUrl(value) {
+  const candidate = cleanProfileText(value, 1000);
+  if (/^https?:\/\//i.test(candidate)) return candidate;
+  return `https://www.google.com/search?q=${encodeURIComponent(candidate || 'learning resource')}`;
+}
+
+function fallbackRecommendations(input) {
+  const roadmap = Array.isArray(input.roadmap) ? input.roadmap : [];
+  const style = input.learner_profile?.preferred_learning_style || input.strategy_profile?.recommended_content_format || 'mixed';
+  const type = style === 'hands_on' ? 'Practice' : style === 'visual' ? 'Video' : style === 'reading' ? 'Documentation' : 'Article';
+  return roadmap.slice().sort((a, b) => (a.mastery || 0) - (b.mastery || 0)).slice(0, 3).map((concept, index) => ({
+    recommendation_key: `${concept.concept_key}_${type.toLowerCase()}`,
+    concept_key: concept.concept_key,
+    title: `${concept.name}: focused ${type.toLowerCase()} study`,
+    resource_type: type,
+    url: recommendationReferenceUrl(`${concept.name} ${type}`),
+    estimated_study_minutes: Math.max(10, Math.min(Number(input.learner_profile?.available_study_time_minutes) || 30, 45)),
+    rationale: index === 0 ? 'This targets the weakest current concept before moving forward in the roadmap.' : 'This supports the next weakest concept in the learning sequence.',
+    priority: index === 0 ? 'High' : index === 1 ? 'Medium' : 'Low'
+  }));
+}
+
+function normalizeRecommendations(raw, input) {
+  const roadmap = Array.isArray(input.roadmap) ? input.roadmap : [];
+  const conceptKeys = new Set(roadmap.map(c => c.concept_key));
+  const recommendations = Array.isArray(raw && raw.recommendations) ? raw.recommendations.slice(0, 6) : [];
+  const usedKeys = new Set();
+  const normalized = recommendations.flatMap((item, index) => {
+    const conceptKey = cleanProfileText(item && item.concept_key, 120);
+    if (!conceptKeys.has(conceptKey)) return [];
+    const title = cleanProfileText(item && item.title, 180);
+    if (!title) return [];
+    const resourceType = ['Article', 'Video', 'Documentation', 'Course', 'Practice'].includes(item && item.resource_type) ? item.resource_type : 'Article';
+    const priority = ['High', 'Medium', 'Low'].includes(item && item.priority) ? item.priority : 'Medium';
+    const minutes = Math.round(clamp(Number(item && item.estimated_study_minutes) || 20, 1, 600));
+    const recommendationKey = cleanProfileText(item && item.recommendation_key, 120) || `${conceptKey}_${resourceType.toLowerCase()}_${index + 1}`;
+    if (usedKeys.has(recommendationKey)) return [];
+    usedKeys.add(recommendationKey);
+    return [{
+      recommendation_key: recommendationKey,
+      concept_key: conceptKey,
+      title,
+      resource_type: resourceType,
+      url: recommendationReferenceUrl(item && item.url ? item.url : `${title} ${roadmap.find(c => c.concept_key === conceptKey)?.name || ''}`),
+      estimated_study_minutes: minutes,
+      rationale: cleanProfileText(item && item.rationale, 600) || 'Recommended for the learner’s current roadmap position.',
+      priority
+    }];
+  });
+  return normalized.length ? normalized : fallbackRecommendations(input);
 }
 
 // 接口 1：AI Coach 智能对话响应（支持多轮上下文）
@@ -399,9 +467,8 @@ Rules:
     let raw = completion.choices[0].message.content || "{}";
     raw = raw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
     raw = raw.replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
-    const s = raw.indexOf("{"); const e = raw.lastIndexOf("}");
-    if (s !== -1 && e !== -1 && e > s) raw = raw.slice(s, e + 1);
-    const parsed = JSON.parse(raw);
+    const parsed = extractJsonObject(raw);
+    if (!parsed) return res.json({ goal: "", topic: "", focus: "" });
     res.json({
       goal: String(parsed.goal || "").trim(),
       topic: String(parsed.topic || "").trim(),
@@ -417,11 +484,13 @@ Rules:
 // Extract a durable learner profile and an actionable strategy from the coaching conversation.
 // Partial profiles are valid: known facts are persisted while Sherpa continues the interview.
 app.post('/api/extract-learner-profile', async (req, res) => {
-  const history = sanitizeHistory(req.body.messages);
-  if (!process.env.OPENAI_API_KEY) return res.status(500).json({ error: 'OPENAI_API_KEY is not configured.' });
-  if (!history.length) return res.json({ profile: {}, strategy: {}, missing_fields: ['learning_goal', 'current_level', 'motivation', 'preferred_learning_style', 'available_study_time', 'target_outcome'], ready: false });
+  const payload = req.body || {};
+  const history = sanitizeHistory(payload.messages);
+  // Profile extraction must not break the learning workflow when the provider is
+  // unavailable. The client can persist later once it has a valid plan.
+  if (!process.env.OPENAI_API_KEY || !history.length) return res.json(emptyLearnerProfileResponse());
 
-  const language = typeof req.body.language === 'string' ? req.body.language : detectLang(history.map(m => m.content).join(' '));
+  const language = typeof payload.language === 'string' ? payload.language : detectLang(history.map(m => m.content).join(' '));
   const systemPrompt = `You are a learning-strategy analyst. Extract only facts the learner explicitly states or that are strongly supported by the conversation. Do not invent personal details.
 Return ONLY valid JSON with this exact shape:
 {"profile":{"learning_goal":"string or empty","current_level":"Beginner|Intermediate|Advanced or empty","motivation":"string or empty","preferred_learning_style":"hands_on|visual|reading|discussion|mixed or empty","available_study_time_minutes":"integer 5-600 or null","target_outcome":"string or empty"},"strategy":{"recommended_session_minutes":"integer 5-600 or null","recommended_content_format":"string or empty","initial_quiz_difficulty":"Easy|Medium|Hard or empty","quiz_mode":"scaffold|standard|challenge or empty","coaching_approach":"string or empty","resource_preference":"string or empty"},"missing_fields":["field names still needed"],"ready":true|false}
@@ -430,11 +499,36 @@ Rules:
 - Derive strategy only from known profile facts. Use a conservative Medium/standard default only when a concrete goal is known but level is not.
 - Use ${language} for free-text values; enum values must remain exactly as specified.`;
   try {
-    const completion = await openai.chat.completions.create({
-      model: process.env.OPENAI_MODEL || 'deepseek-ai/DeepSeek-R1-0528-Qwen3-8B',
-      messages: [{ role: 'system', content: systemPrompt }, ...history], temperature: 0.1, max_tokens: 700
-    });
-    const parsed = extractJsonObject(completion.choices[0].message.content);
+    const maxAttempts = Number(process.env.AI_EXTRACT_ATTEMPTS) || 2;
+    const extractTimeoutMs = Number(process.env.AI_EXTRACT_TIMEOUT) || 25000;
+
+    let parsed = null;
+    for (let attempt = 1; attempt <= maxAttempts && !parsed; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), extractTimeoutMs);
+      try {
+        const completion = await openai.chat.completions.create({
+          model: process.env.OPENAI_MODEL || 'deepseek-ai/DeepSeek-R1-0528-Qwen3-8B',
+          messages: [{ role: 'system', content: systemPrompt }, ...history],
+          temperature: 0.1,
+          max_tokens: 800,
+          signal: controller.signal
+        });
+        const content = completion && completion.choices && completion.choices[0] && completion.choices[0].message
+          ? completion.choices[0].message.content
+          : '';
+        parsed = extractJsonObject(content);
+      } catch (e) {
+        console.error(`Extract learner profile attempt ${attempt} failed:`, e && e.message);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    // 模型不可用 / 超时 / 返回空：优雅返回空画像，绝不抛 500，让前端保留重试机会
+    if (!parsed) {
+      return res.json(emptyLearnerProfileResponse());
+    }
     const rawProfile = parsed.profile || {};
     const rawStrategy = parsed.strategy || {};
     const availableMinutes = Number(rawProfile.available_study_time_minutes);
@@ -459,8 +553,9 @@ Rules:
     const missing = required.filter(field => profile[field] === '' || profile[field] === null);
     res.json({ profile, strategy, missing_fields: missing, ready: missing.length === 0 });
   } catch (error) {
-    console.error('Extract learner profile API error:', error.message);
-    res.status(500).json({ error: 'Could not extract learner profile.' });
+    console.error('Extract learner profile API error:', error && error.message);
+    // 兜底：任何未预料的错误都不应让前端提取链路 500，返回空画像让前端按需重试
+    return res.json(emptyLearnerProfileResponse());
   }
 });
 
@@ -611,6 +706,38 @@ Now output the JSON question.`;
 });
 
 // 接口 4：对简答题 / 填空题做 AI 评分（独立于数据库，无库也能用）
+// Generate resources from the learner's current evidence and roadmap position.
+app.post('/api/generate-resource-recommendations', async (req, res) => {
+  const input = req.body || {};
+  const roadmap = Array.isArray(input.roadmap) ? input.roadmap.slice(0, 12) : [];
+  if (!roadmap.length) return res.status(400).json({ error: 'A roadmap is required.' });
+  const fallback = fallbackRecommendations({ ...input, roadmap });
+  if (!process.env.OPENAI_API_KEY) return res.json({ recommendations: fallback, source: 'fallback' });
+  const language = typeof input.language === 'string' ? input.language : detectLang(`${input.goal || ''} ${input.learner_profile?.learning_goal || ''}`);
+  const systemPrompt = `You are Sherpa's learning-resource strategist. Recommend resources that address the learner's current state, not a generic syllabus.
+Return ONLY valid JSON with this exact shape:
+{"recommendations":[{"recommendation_key":"stable short key","concept_key":"one supplied roadmap concept key","title":"specific resource title","resource_type":"Article|Video|Documentation|Course|Practice","url":"https URL or empty","estimated_study_minutes":20,"rationale":"why this is the best next resource","priority":"High|Medium|Low"}]}
+Rules:
+- Return 3 to 6 recommendations.
+- Prioritize remediation for low mastery, active knowledge gaps, wrong answers, and near-term reviews before broader enrichment.
+- Match resource type, scope, and study time to the learner profile and strategy.
+- Use only supplied concept keys. Do not invent a new concept.
+- Prefer a reputable direct URL only when you are confident; otherwise return an empty url and the platform will create a searchable reference.
+- Write title and rationale in ${language}; enum values and concept keys must remain exactly as specified.`;
+  try {
+    const completion = await openai.chat.completions.create({
+      model: process.env.OPENAI_MODEL || 'deepseek-ai/DeepSeek-R1-0528-Qwen3-8B',
+      messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: JSON.stringify({ ...input, roadmap }) }],
+      temperature: 0.25,
+      max_tokens: 1800
+    });
+    res.json({ recommendations: normalizeRecommendations(extractJsonObject(completion.choices[0].message.content), { ...input, roadmap }), source: 'ai' });
+  } catch (error) {
+    console.error('Generate resource recommendations API error:', error.message);
+    res.json({ recommendations: fallback, source: 'fallback' });
+  }
+});
+
 // Evaluate one learning activity against the learner's evidence, strategy, and roadmap.
 app.post('/api/evaluate-learning-activity', async (req, res) => {
   const input = req.body || {};

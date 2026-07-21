@@ -592,6 +592,17 @@
       background: #eef2ff;
       box-shadow: 0 12px 28px rgba(91, 92, 246, 0.14);
     }
+    /* 提交后即时标记对错，避免等待 AI 时界面“冻结” */
+    .option.correct {
+      border-color: #16a34a;
+      background: #ecfdf5;
+      box-shadow: 0 8px 22px rgba(22, 163, 74, 0.18);
+    }
+    .option.incorrect {
+      border-color: #dc2626;
+      background: #fef2f2;
+      box-shadow: 0 8px 22px rgba(220, 38, 38, 0.16);
+    }
 
     /* Coach guidance options — conversational style, no scoring implied */
     .option.guidance {
@@ -1222,6 +1233,7 @@
     const AI_EXTRACT_PROFILE_ENDPOINT = "http://127.0.0.1:3000/api/extract-learner-profile";
     const AI_ROADMAP_ENDPOINT = "http://127.0.0.1:3000/api/generate-roadmap";
     const AI_ADAPT_ENDPOINT = "http://127.0.0.1:3000/api/evaluate-learning-activity";
+    const AI_RESOURCE_ENDPOINT = "http://127.0.0.1:3000/api/generate-resource-recommendations";
     const AI_GRADE_ENDPOINT = "http://127.0.0.1:3000/api/grade-answer";
     // 题型轮转：让右侧测验在 选择题 / 填空题 / 简答题 之间变化，避免永远是选择题
     let quizTypeRotation = 0;
@@ -1271,6 +1283,7 @@
 
     let resources = []; // 初始为空，表示还没有推荐的学习资源
     let roadmapGenerationPromise = null;
+    let resourceRecommendationPromise = null;
 
     /* ============================================================
        切账号 / 登出时统一调用：把所有 in-memory 业务态恢复到"全新用户"的样子
@@ -1496,9 +1509,33 @@
     }
     
     async function fetchResources() {
+      if (!supabaseClient) return;
+      if (CURRENT_USER_ID && CURRENT_PLAN_ID) {
+        const { data: personalized, error: personalizedError } = await supabaseClient
+          .from("personalized_resource_recommendations")
+          .select("title, resource_type, url, estimated_study_minutes, rationale, priority, concepts ( name )")
+          .eq("user_id", CURRENT_USER_ID)
+          .eq("learning_plan_id", CURRENT_PLAN_ID)
+          .order("updated_at", { ascending: false })
+          .limit(8);
+        if (!personalizedError && personalized?.length) {
+          const priorityRank = { High: 0, Medium: 1, Low: 2 };
+          resources = personalized.map(r => ({
+            type: r.resource_type || "Article",
+            title: r.title,
+            point: r.concepts?.name || "",
+            reason: r.rationale || "",
+            priority: r.priority || "Medium",
+            time: `${r.estimated_study_minutes || 0} min`,
+            url: r.url || ""
+          })).sort((a, b) => (priorityRank[a.priority] ?? 9) - (priorityRank[b.priority] ?? 9));
+          return;
+        }
+        if (personalizedError) console.error("Failed to load personalized resources:", personalizedError);
+      }
       const { data, error } = await supabaseClient
         .from("resources")
-        .select("title, description, resource_type, concepts ( name )")
+        .select("title, description, url, resource_type, concepts ( name )")
         .limit(8);
       if (error) { console.error("加载学习资料失败:", error); return; }
 
@@ -1508,7 +1545,8 @@
           title: r.title,
           point: r.concepts?.name || "",
           reason: r.description || "",
-          time: "" // 数据库目前没有存时长字段，先留空；需要的话可以在resources表里加一列
+          time: "", // 数据库目前没有存时长字段，先留空；需要的话可以在resources表里加一列
+          url: r.url || ""
         }));
       } else {
         // 防御性：没数据时清空，避免上一个账号的资源列表残留
@@ -1516,7 +1554,94 @@
       }
     }
 
+    async function buildResourceRecommendationContext() {
+      if (!supabaseClient || !CURRENT_USER_ID || !CURRENT_PLAN_ID) return null;
+      const { data: planConcepts, error: planError } = await supabaseClient
+        .from("learning_plan_concepts")
+        .select("concept_id, sequence_order, concepts ( id, name, concept_key, description, difficulty )")
+        .eq("learning_plan_id", CURRENT_PLAN_ID)
+        .order("sequence_order");
+      if (planError || !planConcepts?.length) return null;
+      const conceptIds = planConcepts.map(item => item.concept_id);
+      const [{ data: progress }, { data: mistakesData }] = await Promise.all([
+        supabaseClient.from("learning_progress").select("concept_id, mastery, status, correct_rate, next_review").eq("user_id", CURRENT_USER_ID).in("concept_id", conceptIds),
+        supabaseClient.from("wrong_questions").select("question_id, questions ( concept_id )").eq("user_id", CURRENT_USER_ID).eq("mastered", false)
+      ]);
+      const progressByConcept = Object.fromEntries((progress || []).map(item => [item.concept_id, item]));
+      const mistakeCounts = {};
+      (mistakesData || []).forEach(item => {
+        const conceptId = item.questions?.concept_id;
+        if (conceptId) mistakeCounts[conceptId] = (mistakeCounts[conceptId] || 0) + 1;
+      });
+      return planConcepts.map(item => ({
+        concept_key: item.concepts?.concept_key,
+        name: item.concepts?.name,
+        description: item.concepts?.description,
+        difficulty: item.concepts?.difficulty,
+        sequence_order: item.sequence_order,
+        mastery: progressByConcept[item.concept_id]?.mastery || 0,
+        status: progressByConcept[item.concept_id]?.status || "Not Started",
+        correct_rate: progressByConcept[item.concept_id]?.correct_rate || 0,
+        next_review: progressByConcept[item.concept_id]?.next_review || null,
+        unresolved_mistakes: mistakeCounts[item.concept_id] || 0
+      })).filter(item => item.concept_key);
+    }
+
+    async function ensurePersonalizedResources(force = false) {
+      if (!supabaseClient || !CURRENT_USER_ID || !CURRENT_PLAN_ID || state.learningGoal === "Not set yet") return;
+      if (resourceRecommendationPromise) return resourceRecommendationPromise;
+      resourceRecommendationPromise = (async () => {
+        if (!force) {
+          const { count, error } = await supabaseClient
+            .from("personalized_resource_recommendations")
+            .select("id", { count: "exact", head: true })
+            .eq("user_id", CURRENT_USER_ID)
+            .eq("learning_plan_id", CURRENT_PLAN_ID);
+          if (!error && count) return;
+        }
+        const roadmap = await buildResourceRecommendationContext();
+        if (!roadmap?.length) return;
+        const response = await fetch(AI_RESOURCE_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            goal: state.learningGoal,
+            learner_profile: state.learnerProfile,
+            strategy_profile: state.strategyProfile,
+            adaptive_state: state.adaptiveState,
+            roadmap,
+            language: detectLang(state.learningGoal)
+          })
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        if (!Array.isArray(data.recommendations) || !data.recommendations.length) return;
+        const idsByKey = Object.fromEntries((await supabaseClient.from("concepts").select("id, concept_key").in("concept_key", data.recommendations.map(r => r.concept_key))).data?.map(c => [c.concept_key, c.id]) || []);
+        const rows = data.recommendations.filter(r => idsByKey[r.concept_key]).map(r => ({
+          user_id: CURRENT_USER_ID,
+          learning_plan_id: CURRENT_PLAN_ID,
+          concept_id: idsByKey[r.concept_key],
+          recommendation_key: r.recommendation_key,
+          title: r.title,
+          resource_type: r.resource_type,
+          url: r.url,
+          estimated_study_minutes: r.estimated_study_minutes,
+          rationale: r.rationale,
+          priority: r.priority,
+          context_snapshot: { adaptive_state: state.adaptiveState, mastery: roadmap.find(c => c.concept_key === r.concept_key)?.mastery || 0 }
+        }));
+        if (rows.length) {
+          const { error } = await supabaseClient.from("personalized_resource_recommendations").upsert(rows, { onConflict: "user_id,learning_plan_id,recommendation_key" });
+          if (error) throw error;
+          await fetchResources();
+          renderResources();
+        }
+      })().catch(error => console.error("Personalized resource generation failed:", error)).finally(() => { resourceRecommendationPromise = null; });
+      return resourceRecommendationPromise;
+    }
+
     async function fetchChatHistory() {
+      if (!CURRENT_PLAN_ID) return; // 计划未就绪前不查询，避免 learning_plan_id=eq.null 的 400
       const { data, error } = await supabaseClient
         .from("chat_messages")
         .select("role, content")
@@ -1545,6 +1670,7 @@
        选题逻辑：挑一个还没掌握的知识点，从题库里随机抽一道题
     ============================================================ */
     async function pickActiveConcept() {
+      if (!CURRENT_PLAN_ID) return null; // 计划未就绪前不查询，避免 eq.null 的 400
       const { data: planConcepts, error: e1 } = await supabaseClient
         .from("learning_plan_concepts")
         .select("concept_id, sequence_order")
@@ -1627,6 +1753,7 @@
       if (quizContent) quizContent.style.display = "block";
 
       state.selectedAnswer = null;
+      setQuizSubmitBusy(false);   // 新题就绪，恢复提交按钮（清掉上一题置灰状态）
 
       const type = currentQuestion.type || "multiple_choice";
       const isGuidance = currentQuestion.questionType === "coach_guidance";
@@ -1870,6 +1997,7 @@
           fetchStats()         // 顶部 Learning Progress 卡片
         ]);
         await ensureAiRoadmapGenerated();
+        await ensurePersonalizedResources();
       } catch (err) {
         console.error("从数据库加载数据时出现异常，继续使用示例数据兜底:", err);
       }
@@ -2237,7 +2365,9 @@
         .from("learning_plans")
         .insert({
           user_id: userId,
-          subject: null,   // 用户和 AI 聊完才填
+          // The legacy schema requires a non-empty subject. This placeholder is
+          // replaced with the learner's real topic once goal extraction completes.
+          subject: "Pending learner goal",
           goal: null,      // 同上
           level: "Beginner",
           status: "Active"
@@ -2253,6 +2383,38 @@
       // 关键修复：新账号的 plan 是空的，不预挂任何 concept。
       // 等用户聊天后由 persistInferredGoal() 按 topic 挂载。
       return created.id;
+    }
+
+    // 自愈：如果当前没有有效学习计划（CURRENT_PLAN_ID 为 null），
+    // 主动查询/创建一个，避免后续所有查询变成 learning_plan_id=eq.null 而 400/22P02 崩溃。
+    async function ensureActivePlan() {
+      if (CURRENT_PLAN_ID) return CURRENT_PLAN_ID;
+      if (!supabaseClient || !CURRENT_USER_ID) return null;
+      try {
+        CURRENT_PLAN_ID = await getOrCreateActivePlan(CURRENT_USER_ID);
+      } catch (err) {
+        console.error("自愈创建学习计划失败:", err);
+      }
+      return CURRENT_PLAN_ID;
+    }
+
+    // 自适应决策兜底：当没有有效学习计划或概念时返回安全默认值，
+    // 保证提交链路不会因为 getAdaptiveDecision 抛错而中断。
+    function defaultAdaptiveDecision() {
+      return {
+        decision: {
+          evidence_dimension: "recall",
+          diagnosis: { summary: "Not enough context yet.", intervention: "Keep practicing to build a baseline." },
+          next_concept_key: null,
+          next_quiz_difficulty: "Medium",
+          recommended_question_type: "multiple_choice",
+          review_after_hours: 24,
+          updated_mastery: 0
+        },
+        previousProgress: null,
+        nextConcept: null,
+        conceptByKey: {}
+      };
     }
 
     async function onAuthSuccess(user) {
@@ -2896,6 +3058,12 @@
     }
 
     async function getAdaptiveDecision(conceptId, activity) {
+      // 没有有效学习计划或概念时，直接返回兜底决策，避免发出
+      // learning_plan_id/concept_id=eq.null 的查询导致 PostgREST 报 400 / 22P02 崩溃。
+      if (!CURRENT_PLAN_ID || !conceptId) {
+        console.warn("getAdaptiveDecision: 暂无有效学习计划或概念，使用默认决策兜底");
+        return defaultAdaptiveDecision();
+      }
       const [{ data: progress, error: progressError }, { data: evidence, error: evidenceError }, { data: planConcepts, error: roadmapError }] = await Promise.all([
         supabaseClient.from("learning_progress").select("mastery, total_attempts, correct_rate").eq("user_id", CURRENT_USER_ID).eq("concept_id", conceptId).maybeSingle(),
         supabaseClient.from("learning_evidence").select("result, evidence_dimension, notes, created_at").eq("user_id", CURRENT_USER_ID).eq("concept_id", conceptId).order("created_at", { ascending: false }).limit(8),
@@ -3007,6 +3175,11 @@
     }
 
     async function persistAdaptiveLearningState(conceptId, adaptive) {
+      // 学习计划未就绪时跳过持久化，避免对 NOT NULL 的 learning_plan_id 做 upsert null → 22P02 崩溃。
+      if (!CURRENT_PLAN_ID) {
+        console.warn("persistAdaptiveLearningState: 学习计划未就绪，跳过自适应状态持久化");
+        return;
+      }
       const { decision, nextConcept, conceptByKey } = adaptive;
       const nextConceptId = conceptByKey[decision.next_concept_key] || conceptId;
       const reviewAt = new Date(Date.now() + Math.max(1, Number(decision.review_after_hours) || 24) * 60 * 60 * 1000).toISOString();
@@ -3033,6 +3206,46 @@
         knowledge_gap: knowledgeGap,
         last_decision: decision
       };
+    }
+
+    // 提交中禁用按钮，避免重复提交；也作为“界面有响应”的即时反馈
+    function setQuizSubmitBusy(busy) {
+      const btn = document.getElementById("workspaceSubmitBtn");
+      if (!btn) return;
+      btn.disabled = busy;
+      btn.textContent = busy ? "Analyzing…" : "Submit answer";
+      btn.style.opacity = busy ? "0.6" : "1";
+      btn.style.cursor = busy ? "not-allowed" : "pointer";
+    }
+
+    // 多选题提交后即时把正确项标绿、所选错误项标红
+    function markAnswerOptions(correct) {
+      const type = currentQuestion && currentQuestion.type;
+      if (type !== "multiple_choice") return;
+      const chosenLetter = ["A", "B", "C", "D", "E"][state.selectedAnswer];
+      const container = document.getElementById("workspaceOptionsContainer");
+      if (!container) return;
+      container.querySelectorAll(".option").forEach(btn => {
+        const badge = btn.querySelector(".badge");
+        const letter = badge ? badge.textContent.trim() : "";
+        if (letter === currentQuestion.answer) btn.classList.add("correct");
+        else if (letter === chosenLetter && !correct) btn.classList.add("incorrect");
+      });
+    }
+
+    // 判分后立刻给出视觉反馈（不等 AI/数据库），并把反馈区滚入视野
+    function showImmediateFeedback(correct) {
+      const minimalDecision = {
+        diagnosis: {
+          summary: correct ? "Correct — nice work." : "Let's review this one together.",
+          intervention: "Sherpa is analyzing your answer…"
+        },
+        next_concept_key: null
+      };
+      renderQuizFeedback(correct, { mastery: 0, status: "Analyzing…" }, minimalDecision);
+      markAnswerOptions(correct);
+      const collapse = document.getElementById("workspaceFeedbackCollapse");
+      if (collapse) collapse.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
 
     function renderQuizFeedback(correct, progress, decision) {
@@ -3187,15 +3400,26 @@
         }
       }
 
+      // ── 立即反馈：不等 AI/数据库，先标记对错、展开分析、按钮置灰 ──
+      // 这样即使后续自适应分析较慢，界面也立刻“有反应”，不会再看起来卡死。
+      setQuizSubmitBusy(true);
+      showImmediateFeedback(correct);
+
       // 数据库未连接：走静态兜底（不写库）
       if (!supabaseClient) {
+        setQuizSubmitBusy(false);
         return submitWorkspaceQuizFallback(type, correct, userAnswerText);
       }
+
+      // 自愈：确保有一个有效学习计划，否则后续写入会因 learning_plan_id 缺失而失败。
+      await ensureActivePlan();
+      console.log("[submit诊断] CURRENT_USER_ID=", CURRENT_USER_ID, "CURRENT_PLAN_ID=", CURRENT_PLAN_ID, "concept_id=", currentQuestion && currentQuestion.concept_id, "questionId=", currentQuestion && currentQuestion.id);
 
       // Coach-generated questions have no DB id yet — persist first so they get a
       // real id + concept_id and can be tracked correctly in the mistake book.
       const qId = await ensureQuestionPersisted(currentQuestion);
       if (!qId) {
+        setQuizSubmitBusy(false);
         renderQuizFeedback(correct, { mastery: 0 });
         const aiSummary = correct
           ? `Nice work on ${currentQuestion.conceptName}.`
@@ -3221,47 +3445,74 @@
           .single();
         if (attemptErr) throw attemptErr;
 
-        const adaptive = await getAdaptiveDecision(currentQuestion.concept_id, {
-          is_correct: correct,
-          question_type: type,
-          difficulty: currentQuestion.difficulty || "Medium",
-          question_title: currentQuestion.title,
-          user_answer: userAnswerText,
-          explanation: currentQuestion.explanation || ""
-        });
+        // 自适应分析属于"增强"，失败不应阻断提交——任何异常都回退默认决策。
+        let adaptive;
+        try {
+          adaptive = await getAdaptiveDecision(currentQuestion.concept_id, {
+            is_correct: correct,
+            question_type: type,
+            difficulty: currentQuestion.difficulty || "Medium",
+            question_title: currentQuestion.title,
+            user_answer: userAnswerText,
+            explanation: currentQuestion.explanation || ""
+          });
+        } catch (e) {
+          console.warn("自适应决策失败，回退默认决策:", e && e.message);
+          adaptive = defaultAdaptiveDecision();
+        }
 
-        const { error: evidenceError } = await supabaseClient.from("learning_evidence").insert({
-          user_id: CURRENT_USER_ID,
-          concept_id: currentQuestion.concept_id,
-          question_id: qId,
-          attempt_id: attempt.id,
-          result: correct ? "correct" : "incorrect",
-          evidence_dimension: adaptive.decision.evidence_dimension,
-          notes: JSON.stringify({
-            diagnosis: adaptive.decision.diagnosis,
-            next_concept_key: adaptive.decision.next_concept_key,
-            next_quiz_difficulty: adaptive.decision.next_quiz_difficulty,
-            recommended_question_type: adaptive.decision.recommended_question_type,
-            review_after_hours: adaptive.decision.review_after_hours
-          })
-        });
-        if (evidenceError) throw evidenceError;
+        // 学习证据属于"增强"，写入失败不阻断提交
+        // Render from the adaptive response immediately. Persistence and the
+        // subsequent data refresh can complete without withholding feedback.
+        let progress = {
+          mastery: Number(adaptive.decision.updated_mastery) || 0,
+          status: masteryStatus(Number(adaptive.decision.updated_mastery) || 0)
+        };
+        renderQuizFeedback(correct, progress, adaptive.decision);
 
-        await updateWrongQuestion(qId, correct);
-        let progress = { mastery: 0 };
+        try {
+          const { error: evidenceError } = await supabaseClient.from("learning_evidence").insert({
+            user_id: CURRENT_USER_ID,
+            concept_id: currentQuestion.concept_id,
+            question_id: qId,
+            attempt_id: attempt.id,
+            result: correct ? "correct" : "incorrect",
+            evidence_dimension: adaptive.decision.evidence_dimension,
+            notes: JSON.stringify({
+              diagnosis: adaptive.decision.diagnosis,
+              next_concept_key: adaptive.decision.next_concept_key,
+              next_quiz_difficulty: adaptive.decision.next_quiz_difficulty,
+              recommended_question_type: adaptive.decision.recommended_question_type,
+              review_after_hours: adaptive.decision.review_after_hours
+            })
+          });
+          if (evidenceError) console.warn("写入学习证据失败（不阻断提交）:", evidenceError.message);
+        } catch (e) {
+          console.warn("写入学习证据异常（不阻断提交）:", e && e.message);
+        }
+
+        try { await updateWrongQuestion(qId, correct); } catch (e) { console.warn("更新错题本失败（不阻断提交）:", e && e.message); }
         if (currentQuestion.concept_id) {
-          progress = await updateLearningProgress(currentQuestion.concept_id, correct, adaptive.decision);
-          await persistAdaptiveLearningState(currentQuestion.concept_id, adaptive);
+          try {
+            progress = await updateLearningProgress(currentQuestion.concept_id, correct, adaptive.decision);
+          } catch (e) { console.warn("更新学习进度失败（不阻断提交）:", e && e.message); }
+          try {
+            await persistAdaptiveLearningState(currentQuestion.concept_id, adaptive);
+          } catch (e) { console.warn("持久化自适应状态失败（不阻断提交）:", e && e.message); }
         }
 
         renderQuizFeedback(correct, progress, adaptive.decision);
-        await fetchLearningMap();
-        renderLearningMap();
-        renderAIRecommendation();
-        await fetchMistakes();
-        renderMistakes();
-        await updateStreak();   // 完成一次真实答题即算活跃，更新连续学习天数
-        await fetchStats();     // 同步刷新顶部 Learning Progress 卡片
+        // 以下均为提交成功后的 UI 刷新，任何失败都不应回弹"提交失败"
+        try {
+          await fetchLearningMap();
+          renderLearningMap();
+          renderAIRecommendation();
+          await fetchMistakes();
+          renderMistakes();
+          await updateStreak();   // 完成一次真实答题即算活跃，更新连续学习天数
+          await fetchStats();     // 同步刷新顶部 Learning Progress 卡片
+        } catch (e) { console.warn("提交后刷新面板失败（不影响提交结果）:", e && e.message); }
+        if (!correct) ensurePersonalizedResources(true);
 
         const aiSummary = correct
           ? `Nice work. Mastery for ${currentQuestion.conceptName} is now ${progress.mastery}%.`
@@ -3273,17 +3524,15 @@
         saveChatMessage("assistant", aiSummary);
 
         showToastNotification(correct ? "Progress updated" : "Added to mistake book");
+        setQuizSubmitBusy(false);
 
-        // 提交后立即进入下一题，避免一直停在“同一道题”上
-        // （按当前目标动态生成、题型轮转，并用上一题标题去重）
-        try {
-          document.getElementById("workspaceFeedbackCollapse").classList.remove("expanded");
-          await generateQuestionFromAI();
-        } catch (e) {
-          console.error("加载下一题失败:", e);
-        }
+        // Keep this activity's feedback visible. The existing next-question
+        // action remains the explicit transition after the learner reviews it.
       } catch (err) {
+        // 输出结构化诊断，方便定位到底是哪张表 / 哪个字段导致的失败
         console.error("提交答案失败:", err);
+        console.error("[submit诊断-失败] code=", err && err.code, "message=", err && err.message, "details=", err && err.details, "hint=", err && err.hint, "| CURRENT_PLAN_ID=", CURRENT_PLAN_ID, "concept_id=", currentQuestion && currentQuestion.concept_id);
+        setQuizSubmitBusy(false);
         alert("提交失败，请稍后重试（详见浏览器控制台console）。");
       }
     }
@@ -3698,12 +3947,13 @@
           <div class="resource">
             <div class="category-title">
               <span class="badge blue">${resource.type}</span>
+              ${resource.priority ? `<span class="badge red">${resource.priority}</span>` : ""}
               <span class="badge">${resource.time}</span>
             </div>
-            <h3>${resource.title}</h3>
-            <p><b>Knowledge point:</b> ${resource.point}</p>
-            <p><b>Why:</b> ${resource.reason}</p>
-            <button class="ghost">Save resource</button>
+            <h3>${escapeHtml(resource.title)}</h3>
+            <p><b>Knowledge point:</b> ${escapeHtml(resource.point)}</p>
+            <p><b>Why:</b> ${escapeHtml(resource.reason)}</p>
+            ${resource.url ? `<a class="ghost" href="${escapeHtml(resource.url)}" target="_blank" rel="noopener noreferrer">Open resource</a>` : `<button class="ghost">Save resource</button>`}
           </div>
         `).join("");
       }
