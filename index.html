@@ -1121,6 +1121,7 @@
 
     const AI_CHAT_ENDPOINT = "http://127.0.0.1:3000/api/chat";
     const AI_Q_ENDPOINT = "http://127.0.0.1:3000/api/generate-question";
+    const AI_EXTRACT_GOAL_ENDPOINT = "http://127.0.0.1:3000/api/extract-goal";
 
     const state = {
       activePage: "landing",
@@ -1925,9 +1926,21 @@
       // 语言类或任意主题：从用户原文中提取具体学习目标（去掉“我想学 / help me”等引导词）
       const cleaned = raw
         .replace(/^(i\s*(want|'?d|would)\s*(to\s*)?(learn|study|get started with|practice|master|improve)|help me (with|get started|learn)|learn\s*|study\s*|practice\s*)/i, "")
+        .replace(/^(with|to|for|my|me|a|an|the|some|about|on|in)\s+/i, "")
         .replace(/[.!?。！？]+$/g, "")
+        .replace(/^(with|to|for|my|me|a|an|the|some|about|on|in)\s+/i, "")
         .trim();
-      const topic = (cleaned && cleaned.length > 0 && cleaned.length <= 40) ? cleaned : "Core concepts";
+
+      // 若提取出的仍是“新技能 / 练习 / 帮助”这类空话，说明用户还没说清想学什么，
+      // 返回空哨兵，让前端保持“未设定”，而不是硬凑出 "Build confidence in with a new skill"
+      const isGeneric =
+        !cleaned ||
+        /^(new skill|skills|a new skill|practice|practicing|questions?|question|help|get started|started|confidence|learn|learning|study|something|anything)$/i.test(cleaned) ||
+        /\b(new skill|practice question|help me|get started)\b/i.test(cleaned);
+      if (isGeneric) {
+        return { goal: "", topic: "", focus: "foundations and practical application" };
+      }
+      const topic = (cleaned.length > 0 && cleaned.length <= 40) ? cleaned : "Core concepts";
       return {
         goal: `Build confidence in ${topic}`,
         topic,
@@ -2058,45 +2071,67 @@
 
     function applyCoachGoalAndQuestion(text) {
       const inferred = inferLearningGoal(text);
-      const wasUnset = state.learningGoal === "Not set yet";
-      const goalChanged = state.learningGoal !== inferred.goal;
-      state.learningGoal = inferred.goal;
-      state.learningTopic = inferred.topic;
-      state.coachStatus = `Tailoring practice around ${inferred.topic.toLowerCase()}`;
+      const hasRealGoal = !!state.learningGoal && state.learningGoal !== "Not set yet";
+
+      // 本地推断只用于决定“引导题”的走向，不再据此写死 learningGoal。
+      // 真正写入 state.learningGoal 的是 extractGoalFromConversation()（调用 AI 从整段对话提取），
+      // 这样学习目标一定和真实聊天内容相关，而不是从“Help me get started”这类按钮文字硬抽。
+      state.coachStatus = hasRealGoal
+        ? `Tailoring practice around ${state.learningTopic || "your goal"}`
+        : "Tell me a subject you want to learn, and I'll set your goal";
       state.suggestedReplies = [
-        `Practice ${inferred.topic} with me`,
+        `Practice ${inferred.topic || "this"} with me`,
         `Make the next question harder`,
         `Explain the reasoning behind the answer`
       ];
 
       // 仅在“尚未确定目标（首次）”或“当前就是引导题”时才生成/刷新元认知引导题；
       // 否则（已经在做 AI 动态练习题）绝不覆盖，避免界面来回跳变/闪退。
-      const showGuidance = wasUnset
+      const showGuidance = state.learningGoal === "Not set yet"
         || !currentQuestion
         || (currentQuestion && currentQuestion.questionType === "coach_guidance");
       if (showGuidance) {
-        state.practiceQuestion = buildCoachPracticeQuestion(inferred.goal, text);
+        state.practiceQuestion = buildCoachPracticeQuestion(inferred.goal || "Core concepts", text);
         currentQuestion = state.practiceQuestion;
-      } else if (goalChanged) {
-        // 目标发生变化：刷新一道按新目标出的题（异步，不阻塞 UI）
-        generateQuestionFromAI();
       }
 
-      // 生成动态学习地图
-      hasLearningGoal = true;
-      learningNodes = generateLearningMap(inferred);
-      renderLearningMap();
-
       renderCurrentQuestion();
-
-      // 把"用户想学什么"持久化到 DB（fire-and-forget，不阻塞 UI）：
-      //   1) 更新 plan 的 subject/goal
-      //   2) 按 topic 挂载对应的 concept
-      //   3) 触发一次 fetchLearningMap，让 learning map 页面切过去时也是最新的
-      // 如果数据库没接，函数会早返回，UI 不受影响。
-      persistInferredGoal(inferred);
-
       return inferred;
+    }
+
+    /* ============================================================
+       从真实对话中提取学习目标（goal / topic / focus）
+       调用后端 /api/extract-goal，让 AI 根据整段对话判断用户真正想学什么，
+       从而解决“学习目标从通用按钮文字硬抽、与聊天内容无关”的问题。
+       ============================================================ */
+    async function extractGoalFromConversation() {
+      const history = normalizeCoachHistory(state.chatHistory);
+      if (history.length === 0) return;
+
+      try {
+        const response = await fetch(AI_EXTRACT_GOAL_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messages: history })
+        });
+        if (!response.ok) return;
+        const data = await response.json();
+        const goal = String(data.goal || "").trim();
+        const topic = String(data.topic || "").trim();
+        if (!goal || !topic) return; // AI 认为用户还没说清想学什么，保持“未设定”
+
+        state.learningGoal = goal;
+        state.learningTopic = topic;
+        state.coachStatus = `Learning: ${topic}`;
+        hasLearningGoal = true;
+        learningNodes = generateLearningMap({ goal, topic });
+        renderLearningMap();
+        persistInferredGoal({ goal, topic });
+        renderWorkspaceCoach();
+      } catch (err) {
+        console.error("提取学习目标失败:", err);
+        // 失败不阻塞：保留当前 goal（可能是 Not set yet 或本地兜底值）
+      }
     }
 
     function renderWorkspaceCoach() {
@@ -2175,7 +2210,7 @@
     }
 
     async function handleCoachInteraction(text) {
-      const inferred = applyCoachGoalAndQuestion(text);
+      applyCoachGoalAndQuestion(text);
       state.chatHistory.push({ sender: "user", text });
       renderWorkspaceCoach();
       saveChatMessage("user", text);
@@ -2184,7 +2219,14 @@
       state.chatHistory.push({ sender: "ai", text: aiReply });
       renderWorkspaceCoach();
       saveChatMessage("assistant", aiReply);
-      showToastNotification(`Goal set: ${inferred.goal}`);
+
+      // 从真实对话中提取学习目标（AI 后端），让 goal 与聊天内容相关
+      await extractGoalFromConversation();
+      showToastNotification(
+        (state.learningGoal && state.learningGoal !== "Not set yet")
+          ? `Goal set: ${state.learningGoal}`
+          : "Tell me a subject you want to learn, and I'll set your goal."
+      );
     }
 
     /* CAPTURING USER TEXTAREA INPUT */
@@ -2193,7 +2235,7 @@
       const text = inputEl.value.trim();
       if (!text) return;
 
-      const inferred = applyCoachGoalAndQuestion(text);
+      applyCoachGoalAndQuestion(text);
       state.chatHistory.push({ sender: "user", text });
       inputEl.value = "";
       renderWorkspaceCoach();
@@ -2203,7 +2245,14 @@
       state.chatHistory.push({ sender: "ai", text: aiReply });
       renderWorkspaceCoach();
       saveChatMessage("assistant", aiReply);
-      showToastNotification(`Goal set: ${inferred.goal}`);
+
+      // 从真实对话中提取学习目标（AI 后端），让 goal 与聊天内容相关
+      await extractGoalFromConversation();
+      showToastNotification(
+        (state.learningGoal && state.learningGoal !== "Not set yet")
+          ? `Goal set: ${state.learningGoal}`
+          : "Tell me a subject you want to learn, and I'll set your goal."
+      );
     }
 
     function handleTextAreaKey(event) {

@@ -18,7 +18,7 @@ app.get('/', (_req, res) => {
   res.json({
     status: 'ok',
     message: 'Sherpa AI backend is running.',
-    endpoints: ['/health', '/api/chat', '/api/ai-feedback', '/api/generate-question']
+    endpoints: ['/health', '/api/chat', '/api/ai-feedback', '/api/generate-question', '/api/extract-goal']
   });
 });
 
@@ -173,6 +173,14 @@ After they answer, **IMMEDIATELY** set the strategy + difficulty level, and begi
 
 ---
 
+### **CRITICAL: NEVER INVENT THE SUBJECT**
+If the learner has NOT yet named a concrete subject or skill they want to learn, you MUST ask them what subject to focus on (e.g., "Great — what subject should we use? Could be algebra, Spanish, photography, anything.") BEFORE giving any worked example, practice question, or quiz.
+- Do NOT assume a subject (never default to math, coding, etc.) just because they asked for "a worked example" or "practice".
+- Once they name a subject, anchor every example, question, and the learning goal to THAT subject.
+- Keep asking (gently, once) until you have a concrete subject — a vague reply like "help me get started" is not a subject.
+
+---
+
 ### **CRITICAL: LANGUAGE CONSISTENCY**
 You MUST respond in the **exact same language** the user writes in. No code-switching, no mixing, no "let me also add in English."
 - User writes in Chinese → reply ONLY in Simplified Chinese.
@@ -197,6 +205,53 @@ You MUST respond in the **exact same language** the user writes in. No code-swit
   } catch (error) {
     console.error("Chat API error:", error.message);
     res.status(500).json({ reply: "我暂时无法连接到 AI 服务，请稍后再试。" });
+  }
+});
+
+// 接口 2.5：从真实对话中提取学习目标（goal / topic / focus）
+// 解决“学习目标从通用按钮文字硬抽、与聊天内容无关”的问题：让 AI 根据整段对话判断用户真正想学什么
+app.post('/api/extract-goal', async (req, res) => {
+  const { messages } = req.body;
+  if (!process.env.OPENAI_API_KEY) {
+    return res.status(500).json({ error: "服务端尚未配置 OPENAI_API_KEY。" });
+  }
+  try {
+    const history = sanitizeHistory(Array.isArray(messages) ? messages : []);
+    if (!history.length) {
+      return res.json({ goal: "", topic: "", focus: "" });
+    }
+    const completion = await openai.chat.completions.create({
+      model: process.env.OPENAI_MODEL || "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
+      messages: [
+        {
+          role: "system",
+          content: `You extract a learner's real goal from a coaching conversation.
+Read the whole conversation and decide the SPECIFIC subject or skill the user wants to learn.
+Rules:
+- Be specific. "math", "coding", "a new skill" are TOO vague — prefer "algebra word problems", "Python basics", "Spanish present tense".
+- If the user has NOT stated any concrete subject yet (only vague/generic replies), return empty strings.
+- Respond with ONLY a single valid JSON object (no markdown, no commentary):
+{"goal":"a concise learning goal, e.g. Build confidence in algebra word problems","topic":"the specific subject, e.g. algebra word problems","focus":"one aspect to emphasize, e.g. translating words to equations"}`
+        },
+        ...history
+      ],
+      temperature: 0.3,
+      max_tokens: 400
+    });
+    let raw = completion.choices[0].message.content || "{}";
+    raw = raw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+    raw = raw.replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
+    const s = raw.indexOf("{"); const e = raw.lastIndexOf("}");
+    if (s !== -1 && e !== -1 && e > s) raw = raw.slice(s, e + 1);
+    const parsed = JSON.parse(raw);
+    res.json({
+      goal: String(parsed.goal || "").trim(),
+      topic: String(parsed.topic || "").trim(),
+      focus: String(parsed.focus || "").trim()
+    });
+  } catch (error) {
+    console.error("Extract goal API error:", error.message);
+    res.status(500).json({ error: "提取学习目标失败。" });
   }
 });
 
