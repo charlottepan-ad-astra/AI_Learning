@@ -1569,6 +1569,41 @@
       return String(s).trim().toLowerCase().replace(/[^\w一-龥]+/g, "");
     }
 
+    // 检测文本语言，用于让 AI 回复与用户保持一致（用户说英文就回英文）
+    function detectLang(text) {
+      if (!text) return "English";
+      const cjk = (String(text).match(/[一-鿿]/g) || []).length;
+      const latin = (String(text).match(/[A-Za-z]/g) || []).length;
+      return cjk > latin ? "Chinese" : "English";
+    }
+
+    // 当 AI 提取学习目标失败时，本地扫描整段对话：用户是否明确说过“想学/练习 X”。
+    // 只要点明过具体学科（如 "I would like to learn English"），就据此锁定目标，
+    // 保证右侧能出现真正的测验题，而不是一直卡在垃圾引导题。
+    function localExtractSubject() {
+      const enPatterns = [
+        /(?:learn|study|learning|studying|practice|practicing|get started with|master|improve|understand|know)\s+([A-Za-z][A-Za-z\s\-]{1,30}?)(?:\s*[.!?。！？]|$)/i,
+        /(?:learn|study|learning)\s+([A-Za-z][A-Za-z\s\-]{1,30})/i
+      ];
+      const zhPatterns = [
+        /(?:学习|学|练习|练|掌握|了解|想学|想练习)\s*([一-鿿]{1,10})/,
+        /(?:learn|study)\s*([一-鿿]{1,10})/i
+      ];
+      for (const m of state.chatHistory) {
+        if (m.sender !== "user") continue;
+        const text = m.text || "";
+        let subj = null;
+        for (const p of enPatterns) { const mm = text.match(p); if (mm) { subj = mm[1].trim(); break; } }
+        if (!subj) for (const p of zhPatterns) { const mm = text.match(p); if (mm) { subj = mm[1].trim(); break; } }
+        if (subj) {
+          subj = subj.replace(/\b(a|an|the|some|my|to|for|about|on|in|with|first|today|now|new|skill|skills|基础|入门)\b/gi, "").trim();
+          subj = subj.split(/\s+/).slice(0, 4).join(" ");
+          if (subj && subj.length <= 30) return subj;
+        }
+      }
+      return null;
+    }
+
     async function saveChatMessage(role, content) {
       if (!supabaseClient) return;
       const { error } = await supabaseClient.from("chat_messages").insert({
@@ -1960,8 +1995,9 @@
 
       // 语言类或任意主题：从用户原文中提取具体学习目标（去掉“我想学 / help me”等引导词）
       const cleaned = raw
-        .replace(/^(i\s*(want|'?d|would)\s*(to\s*)?(learn|study|get started with|practice|master|improve)|help me (with|get started|learn)|learn\s*|study\s*|practice\s*)/i, "")
-        .replace(/^(with|to|for|my|me|a|an|the|some|about|on|in)\s+/i, "")
+        .replace(/^(i\s*(would\s*like\s*to|want\s*to|'?d\s*like\s*to|plan\s*to|wish\s*to|would\s*like|want|'?d|would)\s*(to\s*)?(learn|study|get started with|practice|master|improve|understand|know|review)\s*)/i, "")
+        .replace(/^(help me (with|get started|learn|to learn|study)|learn\s*|study\s*|practice\s*|i\s*am\s*learning\s*|i'?m\s*learning\s*|i\s*want\s*to\s*learn\s*)/i, "")
+        .replace(/^(with|to|for|my|me|a|an|the|some|about|on|in|first|today|now)\s+/i, "")
         .replace(/[.!?。！？]+$/g, "")
         .replace(/^(with|to|for|my|me|a|an|the|some|about|on|in)\s+/i, "")
         .trim();
@@ -2024,13 +2060,19 @@
         conceptName = "SQL filtering";
         difficulty = "Easy";
       } else {
-        // Coach guidance question — no right/wrong answer, purely conversational
-        question = `Which action would best help you practice ${inferred.topic.toLowerCase()} today?`;
+        // Coach guidance question — no right/wrong answer, purely conversational.
+        // 关键：绝不要把用户的原始输入（如 “C 先看语法”）当成知识点塞进题目，
+        // 否则右侧会出现 “Knowledge point: C 先看语法” 这种怪异情况。
+        const safeTopic = (inferred && inferred.topic
+          && inferred.topic.length <= 25
+          && !/would like|want to|help me|get started|skill|learn|study|practice/i.test(inferred.topic))
+          ? inferred.topic : "your goal";
+        question = `Which action would best help you practice ${safeTopic} today?`;
         options = ["Review core concepts", "Try a worked example", "Test yourself with a mini challenge", "Ask for a deeper explanation"];
         answer = null;
-        explanation = null;
-        conceptName = inferred.topic;
-        difficulty = "Medium";
+        explanation = "This is a coaching checkpoint — there's no single correct answer. Pick the path that fits how you feel right now.";
+        conceptName = "Your learning goal";
+        difficulty = "Easy";
         questionType = "coach_guidance";
       }
 
@@ -2114,11 +2156,17 @@
       state.coachStatus = hasRealGoal
         ? `Tailoring practice around ${state.learningTopic || "your goal"}`
         : "Tell me a subject you want to learn, and I'll set your goal";
-      state.suggestedReplies = [
-        `Practice ${inferred.topic || "this"} with me`,
-        `Make the next question harder`,
-        `Explain the reasoning behind the answer`
-      ];
+      state.suggestedReplies = hasRealGoal
+        ? [
+            `Take the quiz on the right →`,
+            `Make the next quiz harder`,
+            `Explain this concept first`
+          ]
+        : [
+            `I want to practice this`,
+            `Explain the concept first`,
+            `Make it more challenging`
+          ];
 
       // 仅在“尚未确定目标（首次）”或“当前就是引导题”时才生成/刷新元认知引导题；
       // 否则（已经在做 AI 动态练习题）绝不覆盖，避免界面来回跳变/闪退。
@@ -2146,33 +2194,46 @@
       const history = normalizeCoachHistory(state.chatHistory);
       if (history.length === 0) return;
 
+      const lang = detectLang(history.map(h => h.content).join(" "));
+
       try {
         const response = await fetch(AI_EXTRACT_GOAL_ENDPOINT, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ messages: history })
+          body: JSON.stringify({ messages: history, language: lang })
         });
-        if (!response.ok) return;
-        const data = await response.json();
-        const goal = String(data.goal || "").trim();
-        const topic = String(data.topic || "").trim();
-        if (!goal || !topic) return; // AI 认为用户还没说清想学什么，保持“未设定”
-
-        state.learningGoal = goal;
-        state.learningTopic = topic;
-        state.coachStatus = `Learning: ${topic}`;
-        hasLearningGoal = true;
-        learningNodes = generateLearningMap({ goal, topic });
-        renderLearningMap();
-        persistInferredGoal({ goal, topic });
-        renderWorkspaceCoach();
-
-        // 目标刚锁定：在右侧生成第一道真正的测验题，避免 quiz 面板空着/被架空
-        try { await generateQuestionFromAI(); } catch (e) { console.error("首题生成失败:", e); }
+        if (response.ok) {
+          const data = await response.json();
+          const goal = String(data.goal || "").trim();
+          const topic = String(data.topic || "").trim();
+          if (goal && topic) {
+            await lockGoalAndGenerateQuiz(goal, topic);
+            return;
+          }
+        }
       } catch (err) {
-        console.error("提取学习目标失败:", err);
-        // 失败不阻塞：保留当前 goal（可能是 Not set yet 或本地兜底值）
+        console.error("AI 提取学习目标失败，尝试本地兜底:", err);
       }
+
+      // AI 提取失败/返回空：用本地规则扫描“用户是否点明过具体学科”，
+      // 保证只要用户说过 "I would like to learn English"，右侧就能出现真正的测验题。
+      const localTopic = localExtractSubject();
+      if (localTopic) {
+        await lockGoalAndGenerateQuiz(`Build confidence in ${localTopic}`, localTopic);
+      }
+    }
+
+    // 锁定学习目标并立即生成第一道真正的测验题（放在右侧，取代引导题）
+    async function lockGoalAndGenerateQuiz(goal, topic) {
+      state.learningGoal = goal;
+      state.learningTopic = topic;
+      state.coachStatus = `Learning: ${topic}`;
+      hasLearningGoal = true;
+      learningNodes = generateLearningMap({ goal, topic });
+      renderLearningMap();
+      persistInferredGoal({ goal, topic });
+      renderWorkspaceCoach();
+      try { await generateQuestionFromAI(); } catch (e) { console.error("首题生成失败:", e); }
     }
 
     function renderWorkspaceCoach() {
@@ -2226,6 +2287,7 @@
 
       // 用完整对话历史构造多轮 messages，避免 AI 每次都把消息当“第一次对话”反复问初始化问题
       const history = normalizeCoachHistory(state.chatHistory);
+      const lang = detectLang(text);
 
       try {
         const response = await fetch(AI_CHAT_ENDPOINT, {
@@ -2233,7 +2295,8 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             messages: [...history, { role: "user", content: text }],
-            learningGoal: goalText
+            learningGoal: goalText,
+            language: lang
           })
         });
 
@@ -2246,7 +2309,9 @@
       } catch (error) {
         console.error("AI Coach request failed:", error);
         const inferred = inferLearningGoal(text);
-        return `I’ve turned your goal into a focused plan: ${inferred.goal}. I’m tailoring a practice question around ${inferred.topic.toLowerCase()}.`;
+        return lang === "Chinese"
+          ? `我已经把你的目标整理成了学习方案：${inferred.goal}。正在围绕${inferred.topic.toLowerCase()}为你准备练习题。`
+          : `I’ve turned your goal into a focused plan: ${inferred.goal}. I’m tailoring a practice question around ${inferred.topic.toLowerCase()}.`;
       }
     }
 
@@ -2607,7 +2672,8 @@
           questionTitle: question.title,
           sampleAnswer: question.answer || question.sample_answer || "",
           userAnswer,
-          knowledgePoint: question.conceptName || ""
+          knowledgePoint: question.conceptName || "",
+          language: detectLang(question.title)
         })
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -2640,14 +2706,19 @@
 
       showToastNotification("Learning path updated based on your choice");
 
-      // 清空引导题，加载一道真正由 AI 根据 Learning Goal 生成的练习题（不再弹同类引导题，避免循环/闪退）
+      // 清空引导题
       state.practiceQuestion = null;
       currentQuestion = null;
       renderCurrentQuestion();
-      try {
-        await generateQuestionFromAI();
-      } catch (err) {
-        console.error("加载 AI 题目失败:", err);
+      await extractGoalFromConversation();
+      if (state.learningGoal === "Not set yet") {
+        // 仍未拿到可锁定目标：退回中性引导题，等待用户明确学科
+        state.practiceQuestion = buildCoachPracticeQuestion("", "");
+        currentQuestion = state.practiceQuestion;
+        renderCurrentQuestion();
+      } else if (!currentQuestion || currentQuestion.questionType === "coach_guidance") {
+        // 目标已锁定但没有真实测验题（如之前生成失败）：补一道
+        try { await generateQuestionFromAI(); } catch (e) { console.error("补生成题目失败:", e); }
       }
       } finally {
         submitCoachGuidance.busy = false;
@@ -2679,7 +2750,8 @@
             focus: inferred.focus,
             difficulty: "Medium",
             previousQuestion,
-            type: requestedType
+            type: requestedType,
+            language: detectLang(inferred.topic)
           })
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);

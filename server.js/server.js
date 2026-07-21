@@ -43,6 +43,14 @@ function sanitizeHistory(msgs) {
   return out;
 }
 
+// 检测文本语言，用于强制 AI 回复与用户保持一致（杜绝“用户说英文、AI 回中文”）
+function detectLang(text) {
+  if (!text) return "English";
+  const cjk = (String(text).match(/[一-鿿]/g) || []).length;
+  const latin = (String(text).match(/[A-Za-z]/g) || []).length;
+  return cjk > latin ? "Chinese" : "English";
+}
+
 // 接口 1：AI Coach 智能对话响应（支持多轮上下文）
 app.post('/api/chat', async (req, res) => {
   // messages: 前端传来的完整对话历史（user/assistant 交替）；单轮调用时回退到 userMessage
@@ -58,6 +66,12 @@ app.post('/api/chat', async (req, res) => {
         ? messages
         : [{ role: "user", content: userMessage || "" }]
     );
+
+    // 强制 AI 回复语言与用户最近一条消息一致
+    const lastUserMsg = [...history].reverse().find(m => m.role === "user");
+    const lang = (typeof req.body.language === "string" && req.body.language)
+      ? req.body.language
+      : detectLang(lastUserMsg ? lastUserMsg.content : (userMessage || ""));
 
     const completion = await openai.chat.completions.create({
       model: process.env.OPENAI_MODEL || "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
@@ -185,6 +199,7 @@ This app has a dedicated "AI Generated Quiz" panel on the RIGHT side. Your job i
 - Instead, end your turn with a short pointer such as: "Now check your understanding — answer the quiz on the right →" (or in Chinese: "试试右侧的测验 →").
 - The quiz on the right is generated automatically from what you've taught; you do NOT need to write the questions yourself.
 - If the learner shares an answer in chat, gently redirect: "Nice try! Submit it in the quiz panel on the right so I can score it and track your progress." (Chinese: "不错！请把它提交到右侧的测验面板，我来评分并记录进度。")
+- EXPLICITLY FORBIDDEN inside the chat: fill-in-the-blank drills, "translate this sentence", "write a sentence using...", "circle the correct option", or ANY graded exercise. Always defer practice to the right-side quiz panel — never do it here.
 
 ---
 
@@ -200,6 +215,9 @@ You MUST respond in the **exact same language** the user writes in. No code-swit
 ### **SESSION CONTEXT (injected by the platform)**
 - Current learning goal: ${learningGoal || 'Not yet set — infer from conversation or ask via Module 6.'}
 - Treat all earlier turns in this conversation as your memory of this learner. Reference them naturally; never pretend the chat just started.
+
+### **LANGUAGE OVERRIDE (highest priority)**
+The user's most recent message is written in ${lang}. You MUST reply in ${lang} and ONLY in ${lang}. Do not switch languages and do not add translations in another language.
 `
         },
         ...history
@@ -227,6 +245,9 @@ app.post('/api/extract-goal', async (req, res) => {
     if (!history.length) {
       return res.json({ goal: "", topic: "", focus: "" });
     }
+    const lang = (typeof req.body.language === "string" && req.body.language)
+      ? req.body.language
+      : detectLang(history.map(h => h.content).join(" "));
     const completion = await openai.chat.completions.create({
       model: process.env.OPENAI_MODEL || "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
       messages: [
@@ -238,7 +259,8 @@ Rules:
 - Be specific. "math", "coding", "a new skill" are TOO vague — prefer "algebra word problems", "Python basics", "Spanish present tense".
 - If the user has NOT stated any concrete subject yet (only vague/generic replies), return empty strings.
 - Respond with ONLY a single valid JSON object (no markdown, no commentary):
-{"goal":"a concise learning goal, e.g. Build confidence in algebra word problems","topic":"the specific subject, e.g. algebra word problems","focus":"one aspect to emphasize, e.g. translating words to equations"}`
+{"goal":"a concise learning goal, e.g. Build confidence in algebra word problems","topic":"the specific subject, e.g. algebra word problems","focus":"one aspect to emphasize, e.g. translating words to equations"}
+- RESPOND IN THE LEARNER'S LANGUAGE: if they write in English, return English goal/topic/focus; if Chinese, return Chinese. Detected language: ${lang}.`
         },
         ...history
       ],
@@ -272,6 +294,9 @@ app.post('/api/generate-question', async (req, res) => {
 
   // 题型：auto 让模型自选，否则按前端指定
   const requestedType = ["multiple_choice", "fill_blank", "short_answer", "auto"].includes(type) ? type : "auto";
+  const lang = (typeof req.body.language === "string" && req.body.language)
+    ? req.body.language
+    : detectLang(`${goal} ${topic}`);
 
   const sysPrompt = `You are an expert question designer for a personalized learning platform.
 Generate ONE high-quality practice question tailored to the learner's goal and topic.
@@ -291,7 +316,8 @@ Rules:
 - If previousQuestion is provided, do NOT repeat it.
 - Match the learner's language.
 - Stay strictly on the stated topic/focus.
-- type must be one of: multiple_choice, fill_blank, short_answer.`;
+- type must be one of: multiple_choice, fill_blank, short_answer.
+- IMPORTANT: Write the question, ALL options, the explanation, and the knowledge_point in the learner's language: ${lang}.`;
 
   const userPrompt = `Learning goal: ${goal || "general learning"}
 Topic to practice: ${topic || "the goal topic"}
@@ -373,7 +399,8 @@ Respond with ONLY a valid JSON object (no markdown):
       messages: [
         {
           role: "system",
-          content: `You are a fair grader. CRITICAL INSTRUCTION: YOU MUST RESPOND IN THE EXACT SAME LANGUAGE USED IN THE QUESTION. If the question is English, respond ONLY in English; if Chinese, respond ONLY in Chinese.`
+          content: `You are a fair grader. CRITICAL INSTRUCTION: RESPOND IN THE SAME LANGUAGE AS THE QUESTION.
+${req.body.language ? "The expected language is " + req.body.language + ". " : ""}If the question is in English, respond ONLY in English; if in Chinese, respond ONLY in Chinese. Do not mix languages.`
         },
         { role: "user", content: prompt }
       ],
